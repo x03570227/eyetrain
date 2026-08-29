@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视力训练记录台</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5c-5 0-9 4.5-10 7 1 2.5 5 7 10 7s9-4.5 10-7c-1-2.5-5-7-10-7z"/>
+      <circle cx="12" cy="12" r="3.2"/>
+    </svg>
+    <div class="brand-text">
+      <h1>视力训练记录台</h1>
+      <p>每天记录一次，看得见进步</p>
+    </div>
+  </div>
+
+  <nav class="tabs" id="tabs">
+    <button type="button" class="tab is-active" data-view="today">当天记录</button>
+    <button type="button" class="tab" data-view="history">历史记录</button>
+  </nav>
+
+  <div class="db-state" id="dbState">
+    <span class="db-dot" id="dbDot"></span>
+    <div class="db-text">
+      <strong id="dbStateTitle">未连接</strong>
+      <span id="dbStateDesc">数据库未初始化</span>
+    </div>
+    <button type="button" class="btn-ghost" id="btnReselect" hidden>重新选择目录</button>
+  </div>
+</header>
+
+<div class="warn-bar" id="warnBar" hidden></div>
+
+<main class="main">
+
+  <!-- ============ 当天记录 ============ -->
+  <section class="view" id="view-today">
+
+    <div class="card date-bar">
+      <button type="button" class="btn-nav" id="btnPrevDay">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>前一天
+      </button>
+      <input type="date" id="recordDate" class="date-input" aria-label="记录日期">
+      <button type="button" class="btn-nav" id="btnNextDay">
+        后一天<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+      </button>
+      <button type="button" class="btn-soft" id="btnToday">回到今天</button>
+      <div class="date-hint" id="dateHint"></div>
+    </div>
+
+    <form id="recordForm" autocomplete="off">
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="tag tag-blue">1</span>训前视力</h2>
+          <p>训练前测出来的视力，测完就填</p>
+        </div>
+        <div class="field-grid" id="preFields"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="tag tag-green">2</span>强化训练视力</h2>
+          <p>做完强化训练之后再测一次</p>
+        </div>
+        <div class="field-grid" id="trainFields"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="tag tag-purple">3</span>测量距离</h2>
+          <p>单位：米。填 2.50 表示 2 米 50，保存时按厘米入库</p>
+        </div>
+        <div class="field-grid" id="distFields"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="tag tag-amber">4</span>备注</h2>
+          <p>训练时长、孩子配合情况、有什么特殊情况都可以写</p>
+        </div>
+        <textarea id="remark" class="remark" rows="4"
+          placeholder="例如：训练 20 分钟，配合得不错，中间休息了一次"></textarea>
+      </div>
+
+      <div class="action-bar" id="actionBar">
+        <div class="action-info" id="actionInfo"></div>
+        <div class="action-btns">
+          <button type="button" class="btn-soft" id="btnEdit" hidden>修改</button>
+          <button type="button" class="btn-soft" id="btnCancel" hidden>取消</button>
+          <button type="button" class="btn-primary btn-lg" id="btnSave">保存记录</button>
+        </div>
+      </div>
+    </form>
+  </section>
+
+  <!-- ============ 历史记录 ============ -->
+  <section class="view" id="view-history" hidden>
+
+    <div class="card filter-bar">
+      <div class="filter-dates">
+        <label>开始日期<input type="date" id="fromDate"></label>
+        <span class="filter-sep">至</span>
+        <label>结束日期<input type="date" id="toDate"></label>
+      </div>
+      <div class="quick-range" id="quickRange">
+        <button type="button" data-days="7">近 7 天</button>
+        <button type="button" data-days="30" class="is-active">近 30 天</button>
+        <button type="button" data-days="90">近 90 天</button>
+        <button type="button" data-days="all">全部</button>
+      </div>
+    </div>
+
+    <div class="chart-grid">
+      <div class="card chart-card">
+        <div class="card-head"><h2><i class="dot dot-blue"></i>左眼视力</h2></div>
+        <div class="chart-box"><canvas id="chartLeft"></canvas></div>
+      </div>
+      <div class="card chart-card">
+        <div class="card-head"><h2><i class="dot dot-green"></i>右眼视力</h2></div>
+        <div class="chart-box"><canvas id="chartRight"></canvas></div>
+      </div>
+      <div class="card chart-card">
+        <div class="card-head"><h2><i class="dot dot-purple"></i>双眼视力</h2></div>
+        <div class="chart-box"><canvas id="chartBoth"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2>记录明细</h2>
+        <p id="tableCount"></p>
+      </div>
+      <div class="table-wrap">
+        <table class="record-table">
+          <thead>
+            <tr>
+              <th>日期</th>
+              <th>训前左</th><th>训前右</th><th>训前双</th>
+              <th>强化左</th><th>强化右</th><th>强化双</th>
+              <th>测视距离(m)</th><th>训练距离(m)</th>
+              <th>备注</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- ============ 初始化遮罩 ============ -->
+<div class="overlay" id="overlay">
+  <div class="overlay-card">
+    <svg class="overlay-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/>
+      <path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/>
+      <path d="M20 12c0 1.7-3.6 3-8 3s-8-1.3-8-3"/>
+    </svg>
+    <h2 id="overlayTitle">数据库还没初始化</h2>
+    <p class="overlay-lead">
+      所有记录都保存在 <code>eyerecord</code> 这个 SQLite 文件里。
+      网页不能自己翻硬盘，需要你告诉它这个文件放在哪儿 —— 只需做一次。
+    </p>
+    <ol class="overlay-steps">
+      <li>点下面的「初始化数据库」</li>
+      <li>在弹出的文件夹选择框里，选中 <b>index.html 所在的那个文件夹</b></li>
+      <li>以后再打开页面会自动连接，不用重选</li>
+    </ol>
+    <button type="button" class="btn-primary btn-xl" id="btnInit">初始化数据库</button>
+    <p class="overlay-tip" id="overlayTip">建议使用 Chrome 或 Edge 浏览器（需要它们才能写回本地文件）</p>
+
+    <div class="overlay-fallback" id="fallbackBox" hidden>
+      <div class="overlay-fallback-title">当前浏览器不支持直接写回本地文件</div>
+      <p>只有 Chrome / Edge 能自动保存。你仍然可以手动导入导出：</p>
+      <div class="overlay-fallback-btns">
+        <button type="button" class="btn-soft" id="btnImportFile">打开已有的 eyerecord 文件</button>
+        <button type="button" class="btn-soft" id="btnNewEmpty">先不导入，直接开始记</button>
+      </div>
+      <input type="file" id="fileImport" hidden>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="vendor/sql-wasm.js"></script>
+<script src="vendor/sql-wasm-binary.js"></script>
+<script src="vendor/chart.umd.js"></script>
+<script src="js/db.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
