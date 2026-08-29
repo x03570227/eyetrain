@@ -153,11 +153,19 @@ END;
 
   const supportsFsa = () => typeof global.showDirectoryPicker === 'function';
 
+  /** 只查询、不弹授权框。页面刚打开时没有用户手势，只能查询 */
+  function hasPermission(handle) {
+    const opts = { mode: 'readwrite' };
+    if (!handle.queryPermission) return Promise.resolve(true);
+    return Promise.resolve(handle.queryPermission(opts)).then((perm) => perm === 'granted');
+  }
+
+  /** 查不到授权就申请。必须在用户点击的回调里调用，否则浏览器会拒绝 */
   function ensurePermission(handle) {
     const opts = { mode: 'readwrite' };
     if (!handle.queryPermission || !handle.requestPermission) return Promise.resolve(true);
-    return Promise.resolve(handle.queryPermission(opts)).then((perm) => {
-      if (perm === 'granted') return true;
+    return hasPermission(handle).then((ok) => {
+      if (ok) return true;
       return Promise.resolve(handle.requestPermission(opts)).then((p) => p === 'granted');
     });
   }
@@ -175,19 +183,26 @@ END;
       });
   }
 
-  function writeToDisk() {
-    const bytes = state.db.export();
+  function doWrite() {
     if (state.mode !== 'fsa' || !state.fileHandle) {
       state.pendingExport = true;
       return Promise.resolve(false);
     }
+    const bytes = state.db.export();
     return state.fileHandle.createWritable()
       .then((w) => w.write(bytes).then(() => w.close()))
-      .then(() => true)
-      .catch((e) => {
-        state.pendingExport = true;
-        throw e;
-      });
+      .then(() => { state.pendingExport = false; return true; })
+      .catch(() => { state.pendingExport = true; return false; });
+  }
+
+  /**
+   * 把内存里的数据库整体覆盖写回 eyerecord。
+   * 写入排成一条队（避免两次写入抢同一个文件），失败只做标记不抛错，
+   * 这样即使磁盘写入出问题，界面也不会卡死。
+   */
+  function writeToDisk() {
+    state.writeChain = (state.writeChain || Promise.resolve()).then(doWrite);
+    return state.writeChain;
   }
 
   function ensureSchema() {
@@ -211,18 +226,18 @@ END;
         if (!supportsFsa()) return { status: 'need-init', canPickDir: false, reason: 'no-fsa' };
         return withTimeout(idbGet(IDB_KEY), 3000, null).then((dirHandle) => {
           if (!dirHandle) return { status: 'need-init', canPickDir: true, reason: 'no-handle' };
-          return ensurePermission(dirHandle).then((ok) => {
-            // 浏览器没记住上次的授权，得让用户再点一次按钮才能重新选目录
-            if (!ok) return { status: 'need-init', canPickDir: true, reason: 'permission' };
+          state.dirHandle = dirHandle;
+          state.handlePersisted = true;
+          return hasPermission(dirHandle).then((ok) => {
+            // 授权没被记住：不能直接弹窗（没有用户手势），交给页面显示一个「继续」按钮
+            if (!ok) return { status: 'need-permission', canPickDir: true, reason: 'permission' };
             return dirHandle.getFileHandle(DB_FILE_NAME, { create: true }).then((fh) => {
               state.mode = 'fsa';
-              state.dirHandle = dirHandle;
               state.fileHandle = fh;
-              state.handlePersisted = true;
               return readIntoDb(fh).then((schemaCreated) => {
                 // 刚创建的空文件：建完表立刻写回，别让磁盘上留一个 0 字节文件
-                return (schemaCreated ? writeToDisk() : Promise.resolve(true))
-                  .then(() => ({ status: 'ready', created: !!schemaCreated }));
+                const writing = schemaCreated ? writeToDisk() : null;
+                return { status: 'ready', created: !!schemaCreated, writing };
               });
             });
           });
@@ -233,22 +248,53 @@ END;
       });
     },
 
-    /** 点击「初始化数据库」：弹出目录选择框，建库建表 */
+    /**
+     * 点击「初始化数据库」：弹出目录选择框，建库建表。
+     * 记住目录（IndexedDB）和首次落盘都不在这里等 —— 有的浏览器在本地页面上
+     * 用不了 IndexedDB，一等就会把整个界面卡住。
+     */
     initWithPicker() {
       if (!supportsFsa()) return Promise.reject(new Error('当前浏览器不支持目录授权'));
+      // 先弹选择框（必须在用户点击的当口调用），选完再确保 sql.js 运行时就绪
       return global.showDirectoryPicker({ id: IDB_KEY, mode: 'readwrite' })
-        .then((dirHandle) => Promise.all([dirHandle, dirHandle.getFileHandle(DB_FILE_NAME, { create: true })]))
-        .then(([dirHandle, fileHandle]) => {
-          state.dirHandle = dirHandle;
-          state.fileHandle = fileHandle;
-          state.mode = 'fsa';
-          return readIntoDb(fileHandle);
-        })
-        .then((schemaCreated) => idbSet(IDB_KEY, state.dirHandle).then((ok) => {
-          state.handlePersisted = !!ok;
-          return writeToDisk().then(() => ({ status: 'ready', created: !!schemaCreated }));
-        }));
+        .then((dirHandle) => loadRuntime().then(() => dirHandle))
+        .then((dirHandle) => dirHandle.getFileHandle(DB_FILE_NAME, { create: true })
+          .then((fileHandle) => {
+            state.dirHandle = dirHandle;
+            state.fileHandle = fileHandle;
+            state.mode = 'fsa';
+            return readIntoDb(fileHandle);
+          }))
+        .then((schemaCreated) => this._finishOpen(schemaCreated));
     },
+
+    /** 用已经记住的目录重新取得授权并打开数据库（必须在用户点击里调用） */
+    reconnect() {
+      const handle = state.dirHandle;
+      if (!handle) return Promise.reject(new Error('没有记住的目录'));
+      return loadRuntime()
+        .then(() => ensurePermission(handle))
+        .then((ok) => {
+          if (!ok) throw new Error('浏览器没有授权访问该目录，请重新选择一次');
+          return handle.getFileHandle(DB_FILE_NAME, { create: true });
+        })
+        .then((fh) => {
+          state.fileHandle = fh;
+          state.mode = 'fsa';
+          return readIntoDb(fh);
+        })
+        .then((schemaCreated) => this._finishOpen(schemaCreated));
+    },
+
+    _finishOpen(schemaCreated) {
+      // 后台记住目录，成不成功都不影响这次使用
+      idbSet(IDB_KEY, state.dirHandle).then((ok) => { state.handlePersisted = !!ok; });
+      const writing = writeToDisk();
+      return { status: 'ready', created: !!schemaCreated, writing };
+    },
+
+    /** 当前连接的目录名，显示在顶栏 */
+    dirName() { return state.dirHandle ? state.dirHandle.name : ''; },
 
     /** 兜底：手动打开一个已有的 eyerecord 文件 */
     loadFromFile(file) {
@@ -285,6 +331,7 @@ END;
       state.fileHandle = null;
       state.db = null;
       state.handlePersisted = false;
+      state.writeChain = null;
       return idbDel(IDB_KEY);
     },
 
@@ -305,16 +352,6 @@ END;
         'SELECT * FROM vision_train_record WHERE record_date BETWEEN ? AND ? ORDER BY record_date DESC',
         [from, to]
       );
-    },
-
-    /** 最近一次填过的距离（cm），新建记录时用来预填 */
-    latestDistances() {
-      const row = queryOne(
-        `SELECT test_distance, train_distance FROM vision_train_record
-         WHERE test_distance IS NOT NULL OR train_distance IS NOT NULL
-         ORDER BY record_date DESC LIMIT 1`
-      );
-      return row || { test_distance: null, train_distance: null };
     },
 
     /** 新增或更新某一天的记录，随后立即落盘 */
@@ -347,7 +384,6 @@ END;
           [d].concat(values)
         );
       }
-      state.pendingExport = false;
       return writeToDisk();
     },
 

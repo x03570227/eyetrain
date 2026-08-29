@@ -74,7 +74,7 @@
       <div class="card">
         <div class="card-head">
           <h2><span class="tag tag-purple">3</span>测量距离</h2>
-          <p>单位：米。填 2.50 表示 2 米 50，保存时按厘米入库</p>
+          <p>单位：米。上下按钮每次调 1 米，也可以直接输入小数（填 2.50 表示 2 米 50，入库按厘米）</p>
         </div>
         <div class="field-grid" id="distFields"></div>
       </div>
@@ -167,12 +167,13 @@
       所有记录都保存在 <code>eyerecord</code> 这个 SQLite 文件里。
       网页不能自己翻硬盘，需要你告诉它这个文件放在哪儿 —— 只需做一次。
     </p>
-    <ol class="overlay-steps">
+    <ol class="overlay-steps" id="overlaySteps">
       <li>点下面的「初始化数据库」</li>
       <li>在弹出的文件夹选择框里，选中 <b>index.html 所在的那个文件夹</b></li>
-      <li>以后再打开页面会自动连接，不用重选</li>
+      <li>以后再打开页面会自动连接；浏览器要是记不住目录，顶栏会显示「未记住目录」，那就需要再选一次</li>
     </ol>
     <button type="button" class="btn-primary btn-xl" id="btnInit">初始化数据库</button>
+    <button type="button" class="btn-primary btn-xl" id="btnReconnect" hidden>继续（连接数据目录）</button>
     <p class="overlay-tip" id="overlayTip">建议使用 Chrome 或 Edge 浏览器（需要它们才能写回本地文件）</p>
 
     <div class="overlay-fallback" id="fallbackBox" hidden>

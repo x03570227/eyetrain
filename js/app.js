@@ -9,10 +9,10 @@
   /* ---------------- 字段定义 ---------------- */
 
   const VISION_QUICK = [0.4, 0.6, 0.8, 1.0, 1.2, 1.5];
-  const DIST_QUICK = [2.5, 3.0, 5.0];
+  const DIST_QUICK = [2.5, 5, 9];
 
   const VISION_OPT = { min: 0.2, max: 1.5, step: 0.1, decimals: 1, startFrom: 1.0, quick: VISION_QUICK };
-  const DIST_OPT = { min: 0.1, max: 20, step: 0.01, decimals: 2, startFrom: 2.50, quick: DIST_QUICK, unit: '米' };
+  const DIST_OPT = { min: 1, max: 20, step: 1, decimals: 2, unit: '米', quick: DIST_QUICK };
 
   const VISION_GROUPS = [
     {
@@ -37,8 +37,10 @@
     {
       container: 'distFields',
       fields: [
-        { key: 'test_distance', label: '测视距离', hint: '测训前视力时站多远' },
-        { key: 'train_distance', label: '强化训练距离', hint: '做训练时站多远' }
+        { key: 'test_distance', label: '测视距离', hint: '测训前视力时站多远',
+          opt: { startFrom: 5, defaultValue: 5 } },
+        { key: 'train_distance', label: '强化训练距离', hint: '做训练时站多远',
+          opt: { startFrom: 9, defaultValue: 9 } }
       ]
     }
   ];
@@ -68,7 +70,9 @@
     overlayTitle: $('overlayTitle'),
     overlayTip: $('overlayTip'),
     fallbackBox: $('fallbackBox'),
+    overlaySteps: $('overlaySteps'),
     btnInit: $('btnInit'),
+    btnReconnect: $('btnReconnect'),
     btnImportFile: $('btnImportFile'),
     btnNewEmpty: $('btnNewEmpty'),
     fileImport: $('fileImport'),
@@ -160,7 +164,8 @@
 
   /* ---------------- 数值输入控件 ---------------- */
 
-  function buildField(host, def, opt) {
+  function buildField(host, def, baseOpt) {
+    const opt = Object.assign({}, baseOpt, def.opt);
     const wrap = document.createElement('div');
     wrap.className = 'num-field';
 
@@ -198,7 +203,7 @@
       b.type = 'button';
       b.title = tip;
       b.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="' + path + '"/></svg>';
-      b.addEventListener('click', () => step(def.key, dir, opt));
+      b.addEventListener('click', () => step(def.key, dir));
       spin.appendChild(b);
     });
     box.appendChild(spin);
@@ -210,17 +215,17 @@
       const b = document.createElement('button');
       b.type = 'button';
       b.textContent = fmt(v, opt.decimals);
-      b.addEventListener('click', () => setValue(def.key, v, opt));
+      b.addEventListener('click', () => setValue(def.key, v));
       quick.appendChild(b);
       return { btn: b, value: v };
     });
     wrap.appendChild(quick);
 
-    input.addEventListener('input', () => syncQuick(def.key, opt));
+    input.addEventListener('input', () => syncQuick(def.key));
     input.addEventListener('change', () => {
       const v = readValue(def.key);
       input.value = v === null ? '' : fmt(v, opt.decimals);
-      syncQuick(def.key, opt);
+      syncQuick(def.key);
     });
 
     host.appendChild(wrap);
@@ -236,23 +241,28 @@
     return isNaN(n) ? null : n;
   }
 
-  function setValue(key, v, opt) {
+  function setValue(key, v) {
     const f = fields[key];
-    const val = v === null ? null : Math.min(opt.max, Math.max(opt.min, round(v, 3)));
+    const opt = f.opt;
+    const val = v === null || v === undefined
+      ? null
+      : Math.min(opt.max, Math.max(opt.min, round(v, 3)));
     f.input.value = val === null ? '' : fmt(val, opt.decimals);
-    syncQuick(key, opt);
+    syncQuick(key);
   }
 
-  function step(key, dir, opt) {
+  /** 点一下 ▲▼ 走一个步长；空值时直接跳到 startFrom */
+  function step(key, dir) {
+    const opt = fields[key].opt;
     const cur = readValue(key);
     const next = cur === null
       ? opt.startFrom
       : Math.min(opt.max, Math.max(opt.min, round(cur + dir * opt.step, 3)));
-    setValue(key, next, opt);
+    setValue(key, next);
     fields[key].input.focus();
   }
 
-  function syncQuick(key, opt) {
+  function syncQuick(key) {
     const f = fields[key];
     const v = readValue(key);
     f.quickBtns.forEach((q) => {
@@ -305,22 +315,19 @@
     state.editing = !rec;
 
     if (rec) {
-      setValue('pre_left', rec.pre_left, VISION_OPT);
-      setValue('pre_right', rec.pre_right, VISION_OPT);
-      setValue('pre_both', rec.pre_both, VISION_OPT);
-      setValue('train_left', rec.train_left, VISION_OPT);
-      setValue('train_right', rec.train_right, VISION_OPT);
-      setValue('train_both', rec.train_both, VISION_OPT);
-      setValue('test_distance', cmToM(rec.test_distance), DIST_OPT);
-      setValue('train_distance', cmToM(rec.train_distance), DIST_OPT);
+      setValue('pre_left', rec.pre_left);
+      setValue('pre_right', rec.pre_right);
+      setValue('pre_both', rec.pre_both);
+      setValue('train_left', rec.train_left);
+      setValue('train_right', rec.train_right);
+      setValue('train_both', rec.train_both);
+      setValue('test_distance', cmToM(rec.test_distance));
+      setValue('train_distance', cmToM(rec.train_distance));
       el.remark.value = rec.remark || '';
     } else {
-      Object.keys(fields).forEach((k) => setValue(k, null, fields[k].opt));
+      // 新建：视力留空，距离带出默认值（测视 5 米、强化训练 9 米）
+      Object.keys(fields).forEach((k) => setValue(k, fields[k].opt.defaultValue));
       el.remark.value = '';
-      // 新建时把上次填过的距离带出来，省得每天重填
-      const last = window.EyeDB.latestDistances();
-      setValue('test_distance', cmToM(last.test_distance), DIST_OPT);
-      setValue('train_distance', cmToM(last.train_distance), DIST_OPT);
     }
 
     setLocked(state.hasRecord);
@@ -538,10 +545,14 @@
     const auto = window.EyeDB.isAutoSave();
     el.dbDot.className = 'db-dot ' + (auto ? 'is-ok' : 'is-warn');
     el.dbStateTitle.textContent = auto ? '已连接' : '内存模式';
-    el.dbStateDesc.textContent = auto
-      ? window.EyeDB.dbFileLabel() + ' · 自动保存' +
-        (window.EyeDB.isHandleRemembered() ? '' : '，下次打开需重选目录')
-      : '需手动导出文件';
+    if (auto) {
+      const dir = window.EyeDB.dirName();
+      el.dbStateDesc.textContent = window.EyeDB.dbFileLabel() + ' · 自动保存' +
+        (dir ? '（' + dir + '）' : '') +
+        (window.EyeDB.isHandleRemembered() ? '' : ' · 未记住目录');
+    } else {
+      el.dbStateDesc.textContent = '需手动导出文件';
+    }
     el.btnReselect.hidden = !auto;
   }
 
@@ -563,11 +574,12 @@
 
   function showOverlay(res) {
     const canPickDir = !!(res && res.canPickDir);
-    const reconnect = res && res.reason === 'permission';
+    const needPermission = !!res && (res.status === 'need-permission' || res.reason === 'permission');
     el.overlay.hidden = false;
-    el.overlayTitle.textContent = reconnect ? '请再选一次数据目录' : '数据库还没初始化';
-    el.btnInit.textContent = reconnect ? '选择目录' : '初始化数据库';
-    el.btnInit.hidden = !canPickDir;
+    el.overlayTitle.textContent = needPermission ? '点一下「继续」就连上数据目录' : '数据库还没初始化';
+    el.overlaySteps.hidden = needPermission;
+    el.btnReconnect.hidden = !needPermission;
+    el.btnInit.hidden = needPermission || !canPickDir;
     el.fallbackBox.hidden = canPickDir;
     el.overlayTip.textContent = canPickDir
       ? '建议使用 Chrome 或 Edge 浏览器（只有它们能把数据写回本地文件）'
@@ -577,7 +589,7 @@
 
   function hideOverlay() { el.overlay.hidden = true; }
 
-  function onReady() {
+  function onReady(res) {
     state.ready = true;
     hideOverlay();
     renderDbState();
@@ -585,6 +597,8 @@
     el.recordDate.value = todayStr();
     loadDate();
     initHistoryDefaults();
+    // 首次建表的落盘是后台跑的，跑完再刷一次提示条
+    if (res && res.writing) res.writing.then(() => { renderDbState(); renderWarnBar(); });
   }
 
   function initHistoryDefaults() {
@@ -606,11 +620,20 @@
 
     el.btnInit.addEventListener('click', () => {
       window.EyeDB.initWithPicker().then((res) => {
-        onReady();
+        onReady(res);
         toast(res && res.created ? '数据库已建好，可以开始记录了' : '已连接到 eyerecord');
       }).catch((err) => {
         if (err && err.name === 'AbortError') { toast('没有选择文件夹，已取消', true); return; }
         toast('初始化失败：' + (err && err.message ? err.message : err), true);
+      });
+    });
+
+    el.btnReconnect.addEventListener('click', () => {
+      window.EyeDB.reconnect().then((res) => {
+        onReady(res);
+        toast('已连接到 eyerecord');
+      }).catch((err) => {
+        toast('连接失败：' + (err && err.message ? err.message : err), true);
       });
     });
 
