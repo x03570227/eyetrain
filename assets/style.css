@@ -131,7 +131,8 @@ svg path, svg circle, svg line, svg polyline {
 
 /* ============ 提示条 ============ */
 .warn-bar {
-  margin: 16px 32px 0;
+  max-width: 90%;
+  margin: 16px auto 0;
   padding: 14px 20px;
   border-radius: 14px;
   background: #fff8ec;
@@ -143,7 +144,7 @@ svg path, svg circle, svg line, svg polyline {
 
 /* ============ 主体 ============ */
 .main {
-  max-width: 1240px;
+  max-width: 90%;
   margin: 0 auto;
   padding: 24px 32px 60px;
 }
@@ -237,6 +238,25 @@ button { font-family: inherit; }
   transition: all .15s;
 }
 .btn-soft:hover { border-color: var(--primary); color: var(--primary); }
+.btn-soft.btn-danger { color: var(--danger); border-color: #f3c2c8; }
+.btn-soft.btn-danger:hover { border-color: var(--danger); color: var(--danger); background: #fff4f5; }
+
+/* 表格里的删除按钮 */
+.btn-del {
+  min-height: 38px;
+  padding: 0 16px;
+  border: 1.5px solid #f3c2c8;
+  border-radius: 10px;
+  background: #fff;
+  color: var(--danger);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .14s;
+}
+.btn-del:hover { border-color: var(--danger); color: #fff; background: var(--danger); }
+.btn-del:disabled { opacity: .5; cursor: not-allowed; }
 
 .btn-nav {
   display: inline-flex;
@@ -453,8 +473,11 @@ button { font-family: inherit; }
 
 .chart-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+  grid-template-columns: repeat(2, 1fr);
   gap: 22px;
+}
+@media (max-width: 900px) {
+  .chart-grid { grid-template-columns: 1fr; }
 }
 .chart-card { margin-bottom: 22px; }
 .chart-card .card-head { margin-bottom: 14px; }

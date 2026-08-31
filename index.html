@@ -92,6 +92,7 @@
         <div class="action-info" id="actionInfo"></div>
         <div class="action-btns">
           <button type="button" class="btn-soft" id="btnEdit" hidden>修改</button>
+          <button type="button" class="btn-soft btn-danger" id="btnDelete" hidden>删除</button>
           <button type="button" class="btn-soft" id="btnCancel" hidden>取消</button>
           <button type="button" class="btn-primary btn-lg" id="btnSave">保存记录</button>
         </div>
@@ -118,16 +119,14 @@
 
     <div class="chart-grid">
       <div class="card chart-card">
-        <div class="card-head"><h2><i class="dot dot-blue"></i>左眼视力</h2></div>
-        <div class="chart-box"><canvas id="chartLeft"></canvas></div>
+        <div class="card-head"><h2><i class="dot dot-blue"></i>训练前视力</h2>
+          <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
+        <div class="chart-box"><canvas id="chartPre"></canvas></div>
       </div>
       <div class="card chart-card">
-        <div class="card-head"><h2><i class="dot dot-green"></i>右眼视力</h2></div>
-        <div class="chart-box"><canvas id="chartRight"></canvas></div>
-      </div>
-      <div class="card chart-card">
-        <div class="card-head"><h2><i class="dot dot-purple"></i>双眼视力</h2></div>
-        <div class="chart-box"><canvas id="chartBoth"></canvas></div>
+        <div class="card-head"><h2><i class="dot dot-purple"></i>强化后视力</h2>
+          <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
+        <div class="chart-box"><canvas id="chartPost"></canvas></div>
       </div>
     </div>
 
@@ -145,6 +144,7 @@
               <th>强化左</th><th>强化右</th><th>强化双</th>
               <th>测视距离(m)</th><th>训练距离(m)</th>
               <th>备注</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="tableBody"></tbody>

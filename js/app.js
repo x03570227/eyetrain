@@ -46,9 +46,22 @@
   ];
 
   const CHART_DEFS = [
-    { canvas: 'chartLeft', pre: 'pre_left', post: 'train_left', hue: '#4f7cff' },
-    { canvas: 'chartRight', pre: 'pre_right', post: 'train_right', hue: '#10b3a3' },
-    { canvas: 'chartBoth', pre: 'pre_both', post: 'train_both', hue: '#8b5cf6' }
+    {
+      canvas: 'chartPre',
+      datasets: [
+        { label: '左眼', field: 'pre_left', hue: '#4f7cff' },
+        { label: '右眼', field: 'pre_right', hue: '#10b3a3' },
+        { label: '双眼', field: 'pre_both', hue: '#8b5cf6' }
+      ]
+    },
+    {
+      canvas: 'chartPost',
+      datasets: [
+        { label: '左眼', field: 'train_left', hue: '#4f7cff' },
+        { label: '右眼', field: 'train_right', hue: '#10b3a3' },
+        { label: '双眼', field: 'train_both', hue: '#8b5cf6' }
+      ]
+    }
   ];
 
   const WEEK = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
@@ -86,6 +99,7 @@
     actionInfo: $('actionInfo'),
     btnEdit: $('btnEdit'),
     btnCancel: $('btnCancel'),
+    btnDelete: $('btnDelete'),
     btnSave: $('btnSave'),
     fromDate: $('fromDate'),
     toDate: $('toDate'),
@@ -292,6 +306,7 @@
     });
     el.remark.readOnly = locked;
     el.btnEdit.hidden = !locked;
+    el.btnDelete.hidden = !state.hasRecord;
     el.btnCancel.hidden = !(state.hasRecord && !locked);
     el.btnSave.hidden = locked;
     el.btnSave.textContent = state.hasRecord ? '保存修改' : '保存记录';
@@ -418,8 +433,9 @@
       if (!charts[def.canvas]) charts[def.canvas] = createChart(box, def);
       const chart = charts[def.canvas];
       chart.data.labels = labels;
-      chart.data.datasets[0].data = asc.map((r) => r[def.pre]);
-      chart.data.datasets[1].data = asc.map((r) => r[def.post]);
+      def.datasets.forEach((ds, i) => {
+        chart.data.datasets[i].data = asc.map((r) => r[ds.field]);
+      });
       chart.update();
       const empty = box.parentNode.querySelector('.empty-tip');
       if (empty) empty.hidden = labels.length > 0;
@@ -438,32 +454,18 @@
       type: 'line',
       data: {
         labels: [],
-        datasets: [
-          {
-            label: '训练前',
-            data: [],
-            borderColor: '#9aa6bd',
-            backgroundColor: 'transparent',
-            pointBackgroundColor: '#9aa6bd',
-            borderDash: [6, 4],
-            borderWidth: 2,
-            pointRadius: 3,
-            tension: 0.32,
-            spanGaps: true
-          },
-          {
-            label: '强化后',
-            data: [],
-            borderColor: def.hue,
-            backgroundColor: hexToRgba(def.hue, 0.12),
-            pointBackgroundColor: def.hue,
-            borderWidth: 2.5,
-            pointRadius: 3.5,
-            fill: true,
-            tension: 0.32,
-            spanGaps: true
-          }
-        ]
+        datasets: def.datasets.map((ds) => ({
+          label: ds.label,
+          data: [],
+          borderColor: ds.hue,
+          backgroundColor: hexToRgba(ds.hue, 0.10),
+          pointBackgroundColor: ds.hue,
+          borderWidth: 2.5,
+          pointRadius: 3.5,
+          fill: true,
+          tension: 0.32,
+          spanGaps: true
+        }))
       },
       options: {
         responsive: true,
@@ -508,7 +510,7 @@
 
     if (!rows.length) {
       el.tableBody.innerHTML =
-        '<tr><td colspan="10"><div class="empty-tip"><b>没有记录</b>换个日期范围试试</div></td></tr>';
+        '<tr><td colspan="11"><div class="empty-tip"><b>没有记录</b>换个日期范围试试</div></td></tr>';
       return;
     }
 
@@ -522,12 +524,14 @@
       const remark = r.remark
         ? '<td class="remark-cell" title="' + esc(r.remark) + '">' + esc(r.remark) + '</td>'
         : '<td class="remark-cell empty">—</td>';
+      const del = '<td><button type="button" class="btn-del" data-del="' + esc(r.record_date) + '">删除</button></td>';
       return '<tr>' +
         '<td class="date">' + esc(r.record_date) + '</td>' +
         cell(r.pre_left, 1) + cell(r.pre_right, 1) + cell(r.pre_both, 1) +
         cell(r.train_left, 1) + cell(r.train_right, 1) + cell(r.train_both, 1) +
         dist(r.test_distance) + dist(r.train_distance) +
         remark +
+        del +
         '</tr>';
     }).join('');
   }
@@ -689,6 +693,43 @@
     el.btnCancel.addEventListener('click', () => {
       state.editing = false;
       loadDate();
+    });
+
+    el.btnDelete.addEventListener('click', () => {
+      const d = el.recordDate.value;
+      if (!d) return;
+      if (!confirm('确定删除 ' + d + ' 的这条记录吗？删除后无法恢复。')) return;
+      el.btnDelete.disabled = true;
+      window.EyeDB.delete(d).then((written) => {
+        el.btnDelete.disabled = false;
+        if (!written) { window.EyeDB.exportBlob(); toast('已删除，并已下载 eyerecord 文件（请覆盖回原目录）', true); }
+        else toast('已删除该天记录');
+        state.hasRecord = false;
+        state.editing = false;
+        loadDate();
+        renderWarnBar();
+        if (!el.viewHistory.hidden) refreshHistory();
+      }).catch((err) => {
+        el.btnDelete.disabled = false;
+        toast('删除失败：' + (err && err.message ? err.message : err), true);
+      });
+    });
+
+    el.tableBody.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-del]');
+      if (!btn) return;
+      const d = btn.getAttribute('data-del');
+      if (!confirm('确定删除 ' + d + ' 的这条记录吗？删除后无法恢复。')) return;
+      btn.disabled = true;
+      window.EyeDB.delete(d).then((written) => {
+        if (!written) { window.EyeDB.exportBlob(); toast('已删除，并已下载 eyerecord 文件（请覆盖回原目录）', true); }
+        else toast('已删除该天记录');
+        renderWarnBar();
+        refreshHistory();
+        if (el.recordDate.value === d) { state.hasRecord = false; state.editing = false; loadDate(); }
+      }).catch((err) => {
+        toast('删除失败：' + (err && err.message ? err.message : err), true);
+      });
     });
 
     el.form.addEventListener('submit', (e) => { e.preventDefault(); saveRecord(); });

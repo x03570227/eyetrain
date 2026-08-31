@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>标准对数视力表（山字图）· 5 m · GB 11533-2011</title>
+<style>
+  :root{
+    --bg:#0d0f13; --panel:#161a20; --panel2:#1d232b; --line:#2b323c;
+    --text:#e8ecf2; --muted:#95a0af; --accent:#4da3ff; --warn:#ffb454; --ok:#4ade80;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg); color:var(--text);
+    font:14px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    overflow:hidden;
+  }
+  #stage{
+    position:absolute; inset:0; overflow:auto;
+    padding:26px; display:flex; justify-content:center; align-items:flex-start;
+  }
+  #sheet{ background:#fff; box-shadow:0 8px 40px rgba(0,0,0,.6); flex:none; }
+  #chart{ display:block; }
+
+  /* ---------- 控制面板 ---------- */
+  #panel{
+    position:fixed; top:14px; right:14px; width:288px; z-index:20;
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    box-shadow:0 10px 34px rgba(0,0,0,.5); overflow:hidden;
+  }
+  #panel h2{
+    margin:0; padding:10px 12px; font-size:13px; font-weight:600; letter-spacing:.4px;
+    background:var(--panel2); border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between; cursor:pointer; user-select:none;
+  }
+  #panel h2 span.tg{color:var(--muted); font-weight:400}
+  #body{padding:12px}
+  #panel.collapsed #body{display:none}
+  .row{display:flex; align-items:center; gap:8px; margin-bottom:10px}
+  .row label{flex:0 0 74px; color:var(--muted); font-size:12px}
+  .row .ctl{flex:1; display:flex; gap:6px; flex-wrap:wrap}
+  select,input[type=number],input[type=text]{
+    background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:5px 7px; font-size:12px; width:100%; outline:none;
+  }
+  select:focus,input:focus{border-color:var(--accent)}
+  button{
+    background:var(--panel2); color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:5px 9px; font-size:12px; cursor:pointer;
+  }
+  button:hover{border-color:var(--accent); color:var(--accent)}
+  button.pri{background:var(--accent); border-color:var(--accent); color:#08111c; font-weight:600}
+  button.pri:hover{filter:brightness(1.1); color:#08111c}
+  .presets{display:flex; gap:5px; margin-top:6px}
+  .presets button{flex:1; padding:4px 0}
+  .hint{font-size:11px; color:var(--muted); line-height:1.5; margin:-4px 0 10px}
+  .sep{height:1px; background:var(--line); margin:12px -12px}
+  #stat{
+    font-size:11px; color:var(--muted); background:var(--panel2);
+    border:1px solid var(--line); border-radius:6px; padding:7px 8px; line-height:1.7;
+  }
+  #stat b{color:var(--text); font-weight:600}
+  #stat .w{color:var(--warn)}
+  #stat .g{color:var(--ok)}
+
+  /* ---------- 校准尺（左上角，独立浮层） ---------- */
+  #calib{
+    position:fixed; left:14px; top:14px; z-index:20;
+    background:rgba(22,26,32,.94); border:1px solid var(--line); border-radius:10px;
+    padding:9px 12px 10px; backdrop-filter:blur(6px);
+  }
+  #calib .t{font-size:11px; color:var(--muted); margin-bottom:7px}
+  #calib .t b{color:var(--text)}
+  #ruler{height:18px; background:#fff; border:1px solid #9aa4b2; box-shadow:0 0 0 1px rgba(0,0,0,.35)}
+
+  /* ---------- 底部提示条 ---------- */
+  #bar{
+    position:fixed; left:14px; bottom:14px; z-index:20; max-width:min(560px,60vw);
+    background:rgba(22,26,32,.94); border:1px solid var(--line); border-radius:10px;
+    padding:9px 12px; font-size:12px; color:var(--muted); backdrop-filter:blur(6px);
+  }
+  #bar b{color:var(--text)}
+  #bar .w{color:var(--warn)}
+  @media (max-width:900px){ #bar{display:none} #panel{width:250px} }
+</style>
+</head>
+<body>
+
+<div id="stage"><div id="sheet"><svg id="chart" xmlns="http://www.w3.org/2000/svg"></svg></div></div>
+
+<div id="calib">
+  <div class="t">用实物尺子量这条白杠，把<b>实测毫米数</b>填进右侧「实测校准」</div>
+  <div id="ruler"></div>
+</div>
+
+<div id="panel">
+  <h2 id="ptitle">显示设置 <span class="tg">[ 收起 ]</span></h2>
+  <div id="body">
+
+    <div class="row">
+      <label>缩放模式</label>
+      <div class="ctl">
+        <select id="mode">
+          <option value="1" selected>1:1 实际大小（可测量）</option>
+          <option value="s">适应屏幕（缩放预览）</option>
+          <option value="w">适应宽度</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>屏幕尺寸</label>
+      <div class="ctl">
+        <input id="inch" type="number" min="5" max="200" step="0.1" value="23.8">
+      </div>
+    </div>
+    <div class="presets">
+      <button data-inch="15.6">15.6″</button>
+      <button data-inch="21.5">21.5″</button>
+      <button data-inch="23.8">23.8″</button>
+      <button data-inch="27">27″</button>
+      <button data-inch="32">32″</button>
+    </div>
+    <div class="hint" style="margin-top:8px">1920×1080 屏幕的物理对角线英寸数（显示器背面铭牌或型号可查）。</div>
+
+    <div class="sep"></div>
+
+    <div class="row">
+      <label>实测校准</label>
+      <div class="ctl"><input id="meas" type="number" min="1" step="0.1" placeholder="量得左上角白杠为多少 mm"></div>
+    </div>
+    <div class="hint">标称 <b style="color:var(--text)">100.0 mm</b>。填入实测值后全表自动修正，白杠会同步变成真实
+      100&nbsp;mm，可再量一次验证。留空则按屏幕尺寸理论值计算。</div>
+
+    <div class="sep"></div>
+
+    <div class="row">
+      <label>视标形状</label>
+      <div class="ctl">
+        <select id="shape">
+          <option value="shan" selected>山（中竖略高）</option>
+          <option value="e">E（三划等长，等效 GB 原图）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>每行视标数</label>
+      <div class="ctl">
+        <select id="count">
+          <option value="gb" selected>国标 2~8 个（幅面 217 mm）</option>
+          <option value="4">固定 4 个（四方向，加宽非国标）</option>
+          <option value="5">固定 5 个（加宽非国标）</option>
+          <option value="8">固定 8 个（加宽非国标）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <label>标注</label>
+      <div class="ctl">
+        <select id="labels">
+          <option value="1" selected>显示国标数值</option>
+          <option value="0">隐藏（纯净测量）</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row" style="margin-bottom:0">
+      <div class="ctl" style="gap:6px">
+        <button id="shuffle" class="pri" style="flex:1">随机方向</button>
+        <button id="fs" style="flex:1">全屏</button>
+      </div>
+    </div>
+
+    <div class="sep"></div>
+    <div id="stat"></div>
+  </div>
+</div>
+
+<div id="bar">
+  <b>测量要点：</b>眼睛距屏幕 <b>5.0 m</b>，5.0 行视标与眼睛等高；单眼轮流检查，先右后左；
+  自 4.0 行起自上而下辨认，<b>能认出该行过半视标</b>即为该行视力。按 <b>F</b> 全屏。
+</div>
+
+<script>
+/* =========================================================================
+   标准对数视力表（远视力表） GB 11533-2011  表3 远视力表视标数据
+   L=5分记录  alpha=视角(')  D=设计距离(m)  side=视标边长(mm)  V=小数记录
+   表2 视标个数：4.0→2  4.1~4.2→2  4.3~4.4→3  4.5~4.6→4  4.7→5  4.8→6  4.9→7  5.0~5.3→8
+   4.3.1 远视力表自上而下 14 行，行距均为 24 mm；4.2 幅面 777 mm × 217 mm
+   ========================================================================= */
+const ROWS = [
+  {L:'4.0', a:'10.000', D:'50.00', side:72.72, V:'0.1',  n:2},
+  {L:'4.1', a:'7.943',  D:'39.72', side:57.76, V:'0.12', n:2},
+  {L:'4.2', a:'6.310',  D:'31.55', side:45.88, V:'0.15', n:2},
+  {L:'4.3', a:'5.012',  D:'25.06', side:36.45, V:'0.2',  n:3},
+  {L:'4.4', a:'3.981',  D:'19.91', side:28.95, V:'0.25', n:3},
+  {L:'4.5', a:'3.162',  D:'15.81', side:23.00, V:'0.3',  n:4},
+  {L:'4.6', a:'2.512',  D:'12.56', side:18.27, V:'0.4',  n:4},
+  {L:'4.7', a:'1.995',  D:'9.98',  side:14.51, V:'0.5',  n:5},
+  {L:'4.8', a:'1.585',  D:'7.93',  side:11.53, V:'0.6',  n:6},
+  {L:'4.9', a:'1.259',  D:'6.30',  side:9.16,  V:'0.8',  n:7},
+  {L:'5.0', a:'1.000',  D:'5.00',  side:7.27,  V:'1.0',  n:8},
+  {L:'5.1', a:'0.794',  D:'3.97',  side:5.78,  V:'1.2',  n:8},
+  {L:'5.2', a:'0.631',  D:'3.15',  side:4.59,  V:'1.5',  n:8},
+  {L:'5.3', a:'0.501',  D:'2.51',  side:3.64,  V:'2.0',  n:8}
+];
+
+/* 视标图形：5×5 单位栅格，每一笔画或空隙 = 边长的 1/5（GB 4.3.1 / 3.1）
+   方向 0=上 1=右 2=下 3=左  —— 与 E 字表等效，缺口(空隙)大小恒为 1 单位 */
+const SHAPES = {
+  shan: [[0,4,5,1],[0,1,1,3],[2,0,1,4],[4,1,1,3]],   // 山：底横 + 左短竖 + 中长竖 + 右短竖
+  e:    [[0,4,5,1],[0,0,1,5],[2,0,1,5],[4,0,1,5]]    // E 旋转 90°：三划等长
+};
+
+const LABEL_COL = 22;      // 左右数值标注列宽 mm
+const MARGIN_TOP = 30;     // 顶部（标题）留白 mm
+const ROW_GAP    = 24;     // 行距 24 mm（GB 4.3.1）
+const SHEET_H    = 777;    // 幅面高 777 mm（GB 4.2.1）
+const GB_SHEET_W = 217;    // 幅面宽 217 mm（GB 4.2.1）
+const DIAG_PX    = Math.hypot(1920,1080); // 2202.907 px 对角线
+
+const $ = id => document.getElementById(id);
+const els = {
+  stage:$('stage'), sheet:$('sheet'), svg:$('chart'),
+  mode:$('mode'), inch:$('inch'), meas:$('meas'), ruler:$('ruler'),
+  shape:$('shape'), count:$('count'), labels:$('labels'),
+  shuffle:$('shuffle'), fs:$('fs'), stat:$('stat')
+};
+
+let dirs = null;    // 各行方向序列
+let calib = 1;      // 用户实测校准系数
+let curScale = 1;   // 当前相对 1:1 的缩放比
+
+/* ---------------- 方向生成：各朝向数目均等 + 次序随机（GB 4.3.4） ---------------- */
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function randDirs(rows){
+  const used=[0,0,0,0], out=[];
+  for(const r of rows){
+    const pool=[], reps=Math.ceil(r.n/4);
+    for(let d=0;d<4;d++) for(let i=0;i<reps;i++) pool.push(d);
+    shuffle(pool);
+    pool.sort((x,y)=>used[x]-used[y]);          // 优先补最少的朝向 → 数目均等
+    const take = shuffle(pool.slice(0,r.n));    // 次序随机
+    take.forEach(d=>used[d]++);
+    out.push(take);
+  }
+  return out;
+}
+
+/* ---------------- 物理尺寸 → CSS 像素 ---------------- */
+function pxPerMm(){
+  const dpr = window.devicePixelRatio || 1;
+  const ppi = DIAG_PX / (parseFloat(els.inch.value) || 23.8);  // 物理像素/英寸
+  // CSS px 的物理英寸 = dpr / ppi  →  每毫米所需 CSS px = ppi / (25.4 * dpr)
+  return ppi / (25.4 * dpr) * calib;
+}
+
+/* ---------------- 生成 SVG ---------------- */
+function build(){
+  const shape = els.shape.value, cm = els.count.value, showLab = els.labels.value === '1';
+  const rows = ROWS.map(r => ({...r, n: cm === 'gb' ? r.n : parseInt(cm,10)}));
+
+  if(!dirs || dirs.length !== rows.length || dirs[0].length !== rows[0].n) dirs = randDirs(rows);
+
+  // 幅面宽度：国标模式固定 217 mm；固定个数模式按需加宽
+  let need = 0;
+  rows.forEach(r => { need = Math.max(need, (2*r.n - 1) * r.side); });   // 视标间距 = 1 个视标宽度
+  const sheetW = cm === 'gb' ? GB_SHEET_W : Math.ceil(need + 2*LABEL_COL + 8);
+  const rowArea = sheetW - 2*LABEL_COL;
+
+  const p = [];
+  p.push(`<rect x="0" y="0" width="${sheetW}" height="${SHEET_H}" fill="#ffffff"/>`);
+
+  if(showLab){
+    p.push(`<text x="${sheetW/2}" y="17" text-anchor="middle" font-size="5" font-family="Arial,Helvetica,'Microsoft YaHei',sans-serif" fill="#000" letter-spacing="1">标准对数视力表  GB 11533-2011</text>`);
+  }
+
+  let y = MARGIN_TOP;
+  p.push(`<g fill="#000" shape-rendering="geometricPrecision">`);
+  rows.forEach((r,i) => {
+    const w = r.side, n = r.n;
+    const gap = n > 1 ? Math.min(w, (rowArea - n*w) / (n-1)) : 0;   // 宽度不足时自动收窄
+    const total = n*w + (n-1)*gap;
+    const x0 = sheetW/2 - total/2;
+    const cy = y + w/2;
+
+    for(let k = 0; k < n; k++){
+      const cx = x0 + k*(w + gap) + w/2;
+      const u  = w/5;                                  // 1 个单位 = 视标边长/5
+      p.push(`<g transform="translate(${cx.toFixed(4)} ${cy.toFixed(4)}) rotate(${dirs[i][k]*90}) scale(${u.toFixed(5)}) translate(-2.5 -2.5)">`);
+      for(const q of SHAPES[shape]) p.push(`<rect x="${q[0]}" y="${q[1]}" width="${q[2]}" height="${q[3]}"/>`);
+      p.push(`</g>`);
+    }
+
+    if(showLab){
+      const F = 'Arial,Helvetica,sans-serif';
+      p.push(`<g fill="#000" font-family="${F}" text-anchor="end">`
+        + `<text x="${LABEL_COL}" y="${(cy+1.3).toFixed(2)}" font-size="3.4">${r.L}</text>`
+        + `<text x="${LABEL_COL}" y="${(cy+4.7).toFixed(2)}" font-size="2.3">${r.a}</text></g>`);
+      p.push(`<g fill="#000" font-family="${F}" text-anchor="start">`
+        + `<text x="${sheetW-LABEL_COL}" y="${(cy+1.3).toFixed(2)}" font-size="3.4">${r.V}</text>`
+        + `<text x="${sheetW-LABEL_COL}" y="${(cy+4.7).toFixed(2)}" font-size="2.3">${r.D}</text></g>`);
+    }
+    y += w + ROW_GAP;
+  });
+  p.push(`</g>`);
+
+  /* ---------------- 页脚：使用说明 + 换算表（GB 4.3.7） ---------------- */
+  if(showLab){
+    const F = "Arial,Helvetica,'Microsoft YaHei',sans-serif";
+    let fy = y - ROW_GAP + 14;
+    const L1 = '使用说明：① 视力表置于被检眼前方 5 m 处，5.0 行视标与被检眼等高；② 两眼分别检查，先右后左，遮盖一眼时勿压迫眼球；';
+    const L2 = '③ 自 4.0 行起自上而下逐行辨认视标开口方向，能正确辨认超过该行半数视标者，该行视力记录即为该眼视力；';
+    const L3 = '④ 照明：直接照明 200~700 lx；后照法（灯箱/屏幕）白底亮度 80~320 cd/m²。⑤ 每行视标各朝向数目均等，出现次序随机。';
+    [L1,L2,L3].forEach(t => { p.push(`<text x="9" y="${fy.toFixed(2)}" font-size="2.9" font-family="${F}" fill="#000">${t}</text>`); fy += 5.2; });
+
+    fy += 5;
+    const c0 = 32, cw = (sheetW - c0 - 9) / ROWS.length;
+    const tableRow = (label, vals) => {
+      p.push(`<text x="9" y="${fy.toFixed(2)}" font-size="2.6" font-family="${F}" fill="#000">${label}</text>`);
+      vals.forEach((v,k) => p.push(`<text x="${(c0 + cw*(k+0.5)).toFixed(2)}" y="${fy.toFixed(2)}" font-size="2.6" font-family="${F}" fill="#000" text-anchor="middle">${v}</text>`));
+      fy += 4.6;
+    };
+    tableRow('5 分记录 L', ROWS.map(r=>r.L));
+    tableRow('小数记录 V', ROWS.map(r=>r.V));
+    tableRow('设计距离 D(m)', ROWS.map(r=>r.D));
+    tableRow("视角 α(′)", ROWS.map(r=>r.a));
+  }
+
+  els.svg.setAttribute('viewBox', `0 0 ${sheetW} ${SHEET_H}`);
+  els.svg.innerHTML = p.join('');
+  return sheetW;
+}
+
+/* ---------------- 应用到屏幕 ---------------- */
+function applySize(sheetW){
+  const f = pxPerMm();                 // 1 mm = ? CSS px
+  const m = els.mode.value;
+  let wpx, hpx;
+  if(m === '1'){
+    wpx = sheetW * f; hpx = SHEET_H * f;
+  }else if(m === 'w'){
+    const s = (els.stage.clientWidth - 56) / sheetW;
+    wpx = sheetW * s; hpx = SHEET_H * s;
+  }else{
+    const s = Math.min((els.stage.clientWidth - 56) / sheetW, (els.stage.clientHeight - 56) / SHEET_H);
+    wpx = sheetW * s; hpx = SHEET_H * s;
+  }
+  els.svg.style.width  = wpx + 'px';
+  els.svg.style.height = hpx + 'px';
+  curScale = wpx / (sheetW * f);
+}
+
+function render(){
+  applySize(build());
+  els.ruler.style.width = (100 * pxPerMm()) + 'px';   // 校准白条：标称 100.000 mm
+  updateStat();
+}
+
+function updateStat(){
+  const f = pxPerMm();
+  const dpr = window.devicePixelRatio || 1;
+  const ppi = DIAG_PX / (parseFloat(els.inch.value) || 23.8);
+  const pct = (curScale*100).toFixed(1);
+  const cls = curScale > 0.999 ? 'g' : 'w';
+  els.stat.innerHTML =
+    `PPI <b>${ppi.toFixed(1)}</b> · 系统缩放 <b>${dpr.toFixed(2)}×</b> · 1&nbsp;mm = <b>${f.toFixed(3)}</b> CSS px<br>`
+    + `幅面 <b>${els.svg.getAttribute('viewBox').split(' ')[2]} × ${SHEET_H}</b> mm<br>`
+    + `当前显示 <span class="${cls}"><b>${pct}%</b></span> `
+    + (curScale > 0.999 ? '<span class="g">（1:1，可直接测量）</span>' : '<span class="w">（已缩放，测量结果无效）</span>');
+}
+
+/* ---------------- 事件 ---------------- */
+$('ptitle').onclick = () => {
+  const p = $('panel'); p.classList.toggle('collapsed');
+  p.querySelector('.tg').textContent = p.classList.contains('collapsed') ? '[ 展开 ]' : '[ 收起 ]';
+};
+['mode','shape','count','labels'].forEach(k => els[k].onchange = render);
+els.inch.oninput = () => { els.meas.value = ''; calib = 1; render(); };
+document.querySelectorAll('.presets button').forEach(b => b.onclick = () => {
+  els.inch.value = b.dataset.inch; els.meas.value = ''; calib = 1; render();
+});
+els.meas.oninput = () => {
+  const v = parseFloat(els.meas.value);
+  calib = (v > 0 && isFinite(v)) ? 100 / v : 1;
+  render();
+};
+els.shuffle.onclick = () => { dirs = null; render(); };
+els.fs.onclick = () => {
+  if(document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(()=>{});
+};
+document.addEventListener('keydown', e => {
+  if(e.key === 'f' || e.key === 'F'){
+    if(document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(()=>{});
+  }
+});
+window.addEventListener('resize', () => render());
+
+/* 系统缩放 / 浏览器缩放变化时自动重算 */
+let lastDpr = window.devicePixelRatio;
+setInterval(() => { if(window.devicePixelRatio !== lastDpr){ lastDpr = window.devicePixelRatio; render(); } }, 400);
+
+render();
+</script>
+</body>
+</html>

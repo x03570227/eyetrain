@@ -354,6 +354,12 @@ END;
       );
     },
 
+    /** 删除某一天的记录，随后立即落盘 */
+    delete(date) {
+      state.db.run('DELETE FROM vision_train_record WHERE record_date = ?', [date]);
+      return writeToDisk();
+    },
+
     /** 新增或更新某一天的记录，随后立即落盘 */
     save(rec) {
       const d = rec.record_date;
