@@ -1,0 +1,468 @@
+/* =============================================================
+ * js/train.js — 测训舞台
+ *
+ * 全屏白底遮罩上画一组山字视标，用方向键作答：
+ *   单击方向键     = 回答当前被红点指中的那个图标的朝向
+ *   双击同一个方向 = 上/下切档，左切测试方式，右切训练眼睛
+ *
+ * 答对就按对照表把当前档位的视力值写进数据库（写的是「今天」，
+ * 跟日期选择框里翻到哪一天无关），答对次数达到强化次数就前进一档。
+ * ============================================================= */
+(function (global) {
+  'use strict';
+
+  const MODES = [
+    { key: 'TEST',   label: '测视' },
+    { key: 'TRAIN',  label: '训练' },
+    { key: 'SECOND', label: '秒视' }
+  ];
+  const EYES = [
+    { key: 'LEFT',  label: '左' },
+    { key: 'RIGHT', label: '右' },
+    { key: 'BOTH',  label: '双眼' }
+  ];
+
+  /* 需求里的对照表：测试方式 + 眼睛 → 数据库字段 */
+  const FIELD_MAP = {
+    TEST:   { LEFT: 'pre_left',    RIGHT: 'pre_right',    BOTH: 'pre_both' },
+    TRAIN:  { LEFT: 'train_left',  RIGHT: 'train_right',  BOTH: 'train_both' },
+    SECOND: { LEFT: 'second_left', RIGHT: 'second_right', BOTH: 'second_both' }
+  };
+
+  /* 双击「左」的循环顺序：训练 → 测视 → 秒视 → 训练
+     （需求原文：当前是训练，双击左切到测视，再双击切到秒视，再双击回到训练） */
+  const MODE_CYCLE = [2, 0, 1];   // MODES[i] 的下一个下标
+  /* 双击「右」的循环顺序：右 → 双眼 → 左 → 右 */
+  const EYE_CYCLE = [1, 2, 0];
+
+  const KEY_DIR = { ArrowUp: 0, ArrowRight: 1, ArrowDown: 2, ArrowLeft: 3 };
+
+  const DOUBLE_MS = 300;    // 双击判定窗口
+  const EFFECT_MS = 1200;   // 反馈效果时长，期间锁输入（要和 CSS 里的动画时长一致）
+  const SECOND_MS = 3000;   // 秒视：每组图标只展示 3 秒
+
+  const $ = (id) => document.getElementById(id);
+
+  const st = {
+    active: false, paused: false, exiting: false,
+    userId: null, config: null,
+    modeIdx: 0, eyeIdx: 0,
+    level: 0,
+    dirs: [], selected: 0, centers: [],
+    success: 0,
+    generation: 0,     // 每次重画自增：延迟触发的按键动作靠它判断自己是否已过期
+    locked: false,
+    pending: null,
+    secondTimer: null, effectTimer: null, pressTimer: null,
+    els: {},
+    onExit: null
+  };
+
+  /* ---------------- 小工具 ---------------- */
+
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+  function todayStr() {
+    const d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  function level() { return global.EyeChart.LEVELS[st.level]; }
+
+  function modeKey() { return MODES[st.modeIdx].key; }
+
+  function currentField() {
+    return FIELD_MAP[modeKey()][EYES[st.eyeIdx].key];
+  }
+
+  /* ---------------- 绘制 ---------------- */
+
+  function draw() {
+    clearPending();
+    const canvas = st.els.canvas;
+    // clientWidth 会强制浏览器立刻排版，所以刚取消 hidden 也能拿到真实尺寸
+    const w = Math.max(160, canvas.clientWidth);
+    const h = Math.max(160, canvas.clientHeight);
+    const calib = st.config.chart_calibration;
+
+    const iconPx = level().side * global.EyeChart.pxPerMm(calib);
+    const count = global.EyeChart.fitCountPx(iconPx, w - 40, st.config.max_display_count);
+
+    st.dirs = global.EyeChart.randomDirs(count);
+    st.selected = count > 1 ? global.EyeChart.randomIndex(count) : 0;
+    st.generation++;
+
+    const out = global.EyeChart.optotypeSvg({
+      level: st.level,
+      dirs: st.dirs,
+      selected: st.selected,
+      width: w,
+      height: h,
+      calibration: calib,
+      bg: '#ffffff',
+      marker: count > 1
+    });
+    canvas.innerHTML = out.svg;
+    st.centers = out.centers;
+
+    renderSide();
+    restartSecondTimer();
+  }
+
+  /** 左侧竖条：14 个档位，当前档高亮 */
+  function renderSide() {
+    const rows = st.els.side.children;
+    for (let i = 0; i < rows.length; i++) {
+      rows[i].classList.toggle('is-current', i === st.level);
+    }
+  }
+
+  function buildSide() {
+    const host = st.els.side;
+    host.innerHTML = '';
+    global.EyeChart.LEVELS.forEach((lv, i) => {
+      const row = document.createElement('div');
+      row.className = 'train-level';
+      row.innerHTML = '<b>' + global.EyeChart.formatV(lv.V) + '</b><span>' + lv.L + '</span>';
+      host.appendChild(row);
+    });
+  }
+
+  /** 顶部下拉条：两组 TAB + 退出 */
+  function renderBar() {
+    const modes = st.els.barModes.children;
+    for (let i = 0; i < modes.length; i++) {
+      modes[i].classList.toggle('is-on', i === st.modeIdx);
+    }
+    const eyes = st.els.barEyes.children;
+    for (let i = 0; i < eyes.length; i++) {
+      eyes[i].classList.toggle('is-on', i === st.eyeIdx);
+    }
+  }
+
+  function buildBar() {
+    const mHost = st.els.barModes;
+    mHost.innerHTML = '';
+    MODES.forEach((m, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'train-tab';
+      b.textContent = m.label;
+      b.addEventListener('click', () => { if (st.active) setMode(i); });
+      mHost.appendChild(b);
+    });
+
+    const eHost = st.els.barEyes;
+    eHost.innerHTML = '';
+    EYES.forEach((e, i) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'train-tab';
+      b.textContent = e.label;
+      b.addEventListener('click', () => { if (st.active) setEye(i); });
+      eHost.appendChild(b);
+    });
+  }
+
+  /* ---------------- 档位 / 模式 / 眼睛 ---------------- */
+
+  /** 切换模式或眼睛都要回到第 0 档、清空成功次数 */
+  function resetLevel() {
+    st.level = 0;
+    st.success = 0;
+    renderBar();
+    draw();
+  }
+
+  function setMode(i) { st.modeIdx = i; resetLevel(); }
+  function setEye(i) { st.eyeIdx = i; resetLevel(); }
+
+  function gotoLevel(i) {
+    st.level = clamp(i, 0, global.EyeChart.LEVELS.length - 1);
+    st.success = 0;   // 换档就重新计数，免得上一档的次数串到这一档
+    draw();
+  }
+
+  /* ---------------- 反馈效果 ---------------- */
+
+  function clearFx() {
+    st.els.fx.innerHTML = '';
+    st.els.stage.classList.remove('is-ok', 'is-bad');
+  }
+
+  function spawnGameFx(ok) {
+    const c = st.centers[st.selected];
+    if (!c) return;
+    const el = document.createElement('div');
+    el.className = 'train-fx-item' + (ok ? ' is-ok' : ' is-bad');
+    // 爱心带 U+FE0F 强制走 emoji 字形（更饱满、离远看得清）；
+    // 有 emoji 字体时用系统红，没有时退回文本字形、吃 CSS 里的红色
+    el.textContent = ok ? '\u2764\uFE0F' : '\uD83D\uDCA5';
+    el.style.left = c.cx + 'px';
+    el.style.top = Math.max(10, c.top - 20) + 'px';
+    st.els.fx.appendChild(el);
+  }
+
+  /**
+   * 播完效果再回调 —— 进档与否要等效果结束才判定，
+   * 效果期间锁输入，避免连按把状态打乱。
+   */
+  function showEffect(ok, done) {
+    st.locked = true;
+    if (st.config.effect_confirm === 'GAME') {
+      spawnGameFx(ok);
+    } else {
+      st.els.stage.classList.add(ok ? 'is-ok' : 'is-bad');
+    }
+    st.effectTimer = setTimeout(() => {
+      st.locked = false;
+      clearFx();
+      done();
+    }, EFFECT_MS);
+  }
+
+  /* ---------------- 作答 ---------------- */
+
+  function answer(dir) {
+    const correct = dir === st.dirs[st.selected];
+
+    if (!correct) {
+      showEffect(false, () => draw());   // 认错了，同档重画
+      return;
+    }
+
+    st.success++;
+    // 写「今天」这一天：训练是当下发生的，跟日期选择框翻到哪天无关
+    global.EyeDB.recordVision(
+      st.userId, todayStr(), currentField(), level().V, st.config.record_require
+    );
+
+    showEffect(true, () => {
+      // 答对次数达到强化次数就进一档，否则同档换一组新图标
+      if (st.success >= st.config.enhance_count) gotoLevel(st.level + 1);
+      else draw();
+    });
+  }
+
+  /* ---------------- 键盘 ---------------- */
+
+  function clearPending() {
+    if (st.pending) {
+      clearTimeout(st.pending.timer);
+      st.pending = null;
+    }
+  }
+
+  function flashPress() {
+    const canvas = st.els.canvas;
+    canvas.classList.add('is-pressed');
+    clearTimeout(st.pressTimer);
+    st.pressTimer = setTimeout(() => canvas.classList.remove('is-pressed'), 130);
+  }
+
+  function onKeyDown(e) {
+    if (!st.active || st.paused || st.exiting) return;
+    if (e.repeat) return;                       // 长按产生的重复事件直接丢掉
+    const dir = KEY_DIR[e.key];
+    if (dir === undefined) return;
+    e.preventDefault();
+
+    flashPress();   // 立刻给个按下的反馈，抵消双击判定带来的等待感
+
+    const now = Date.now();
+    const p = st.pending;
+    // 双击不校验 generation：切档、切模式这些动作跟当前画的是哪一组图标无关，
+    // 所以即使正赶上效果动画或者秒视自动翻页，也照常响应，不然会觉得「按了没反应」
+    if (p && p.key === e.key && now - p.at < DOUBLE_MS) {
+      clearPending();
+      runDouble(e.key);
+      return;
+    }
+
+    clearPending();
+    const gen = st.generation;
+    st.pending = {
+      key: e.key,
+      at: now,
+      timer: setTimeout(() => {
+        st.pending = null;
+        if (!st.active || st.paused || st.exiting) return;
+        if (st.locked) return;              // 期间进了效果动画，这次作答作废
+        if (gen !== st.generation) return;  // 图标已经换过了（比如秒视自动翻页），作废
+        answer(dir);
+      }, DOUBLE_MS)
+    };
+  }
+
+  /** 双击：下=下一档，上=上一档，左=切测试方式，右=切眼睛 */
+  function runDouble(key) {
+    if (key === 'ArrowDown') gotoLevel(st.level + 1);
+    else if (key === 'ArrowUp') gotoLevel(st.level - 1);
+    else if (key === 'ArrowLeft') setMode(MODE_CYCLE[st.modeIdx]);
+    else if (key === 'ArrowRight') setEye(EYE_CYCLE[st.eyeIdx]);
+  }
+
+  /** 秒视：每组只展示 3 秒，到点换一组新图标（不进档、不算答错） */
+  function restartSecondTimer() {
+    clearTimeout(st.secondTimer);
+    if (modeKey() !== 'SECOND') return;
+    st.secondTimer = setTimeout(() => {
+      if (!st.active || st.paused || st.exiting) return;
+      if (st.locked) { restartSecondTimer(); return; }   // 效果还没播完，等下一拍
+      draw();
+    }, SECOND_MS);
+  }
+
+  /* ---------------- 全屏 ---------------- */
+
+  function requestFs() {
+    const el = document.documentElement;
+    if (!el.requestFullscreen) return Promise.resolve(false);
+    return Promise.resolve(el.requestFullscreen()).then(() => true).catch(() => false);
+  }
+
+  function onFullscreenChange() {
+    if (!st.active || st.exiting) return;
+    // Esc 退出全屏时浏览器不会投递 keydown，只能在这里兜底
+    if (!document.fullscreenElement) pause();
+    else hideResume();
+  }
+
+  function pause() {
+    st.paused = true;
+    clearTimeout(st.secondTimer);
+    clearPending();
+    st.els.resume.hidden = false;
+  }
+
+  function hideResume() {
+    st.paused = false;
+    st.els.resume.hidden = true;
+  }
+
+  function onResize() {
+    if (st.active && !st.paused) draw();
+  }
+
+  /* ---------------- 启动 / 退出 ---------------- */
+
+  function start(opts) {
+    if (st.active) return;
+    if (!st.ready) throw new Error('测训舞台没有初始化');
+    if (!opts || !opts.userId || !opts.config) {
+      throw new Error('开始训练前需要先选择用户');
+    }
+
+    st.active = true;
+    st.exiting = false;
+    st.paused = false;
+    st.userId = opts.userId;
+    st.config = opts.config;
+    st.modeIdx = clamp(opts.modeIdx || 0, 0, MODES.length - 1);
+    st.eyeIdx = clamp(opts.eyeIdx || 0, 0, EYES.length - 1);
+    st.onExit = opts.onExit || null;
+
+    clearFx();
+    // 全屏必须赶在用户手势还没失效的时候申请，所以放在最前面（不能等任何 await）
+    requestFs();
+    st.els.stage.hidden = false;
+    // 强制一次排版，好让下面 draw() 能读到真实的舞台尺寸
+    void st.els.stage.offsetWidth;
+    st.els.stage.classList.add('is-in');
+
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    global.addEventListener('resize', onResize);
+
+    resetLevel();
+  }
+
+  function stop() {
+    if (!st.active) return;
+    st.active = false;
+    st.paused = false;
+
+    clearTimeout(st.secondTimer);
+    clearTimeout(st.effectTimer);
+    clearTimeout(st.pressTimer);
+    clearPending();
+
+    document.removeEventListener('keydown', onKeyDown);
+    document.removeEventListener('fullscreenchange', onFullscreenChange);
+    global.removeEventListener('resize', onResize);
+
+    clearFx();
+    st.els.stage.classList.remove('is-in');
+    st.els.stage.hidden = true;
+    st.els.resume.hidden = true;
+
+    global.EyeDB.flushTrainingWrites();
+
+    const cb = st.onExit;
+    st.onExit = null;
+    if (cb) cb({ modeIdx: st.modeIdx, eyeIdx: st.eyeIdx });
+  }
+
+  function exitTraining() {
+    st.exiting = true;
+    stop();
+    st.exiting = false;
+    if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+  }
+
+  /* ---------------- 初始化 ---------------- */
+
+  function init() {
+    // 舞台 markup 齐了才接管，缺一个就整体不启用，免得半初始化后在 start() 里崩
+    const map = {
+      stage: 'trainStage', canvas: 'trainCanvas', fx: 'trainFx', side: 'trainSide',
+      barModes: 'trainBarModes', barEyes: 'trainBarEyes', bar: 'trainBar',
+      topwrap: 'trainTopwrap', resume: 'trainResume',
+      btnExit: 'btnExitTrain', btnResume: 'btnResumeTrain', btnQuit: 'btnQuitTrain'
+    };
+    st.els = {};
+    Object.keys(map).forEach((key) => { st.els[key] = $(map[key]); });
+    st.ready = Object.keys(map).every((key) => !!st.els[key]);
+    if (!st.ready) return;
+
+    buildSide();
+    buildBar();
+
+    st.els.btnExit.addEventListener('click', exitTraining);
+    st.els.btnQuit.addEventListener('click', exitTraining);
+    st.els.btnResume.addEventListener('click', () => {
+      requestFs().then(() => {
+        if (document.fullscreenElement) hideResume();
+        draw();
+      });
+    });
+
+    // hotspot 和下拉条放在同一个容器里，用容器的进出驱动显示，
+    // 鼠标在两个元素之间移动时不会来回闪
+    st.els.topwrap.addEventListener('pointerenter', () => {
+      st.els.topwrap.classList.add('is-open');
+    });
+    st.els.topwrap.addEventListener('pointerleave', () => {
+      st.els.topwrap.classList.remove('is-open');
+    });
+  }
+
+  global.EyeTrain = {
+    init: init,
+    start: start,
+    stop: exitTraining,
+    isActive: () => st.active,
+    MODES: MODES,
+    EYES: EYES
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})(window);

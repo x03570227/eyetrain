@@ -23,15 +23,28 @@
   <nav class="tabs" id="tabs">
     <button type="button" class="tab is-active" data-view="today">当天记录</button>
     <button type="button" class="tab" data-view="history">历史记录</button>
+    <button type="button" class="tab" data-view="train">测训</button>
   </nav>
 
-  <div class="db-state" id="dbState">
-    <span class="db-dot" id="dbDot"></span>
-    <div class="db-text">
-      <strong id="dbStateTitle">未连接</strong>
-      <span id="dbStateDesc">数据库未初始化</span>
+  <div class="topbar-right">
+    <button type="button" class="user-btn" id="btnUser">
+      <svg class="user-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="8" r="3.6"/>
+        <path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"/>
+      </svg>
+      <span id="userName">切换用户</span>
+    </button>
+
+    <div class="db-state" id="dbState">
+      <span class="db-dot" id="dbDot"></span>
+      <div class="db-text">
+        <strong id="dbStateTitle">未连接</strong>
+        <span id="dbStateDesc">正在打开数据库…</span>
+      </div>
+      <button type="button" class="btn-ghost" id="btnExport" hidden>导出备份</button>
+      <button type="button" class="btn-ghost" id="btnImport" hidden>导入</button>
+      <input type="file" id="fileImport" hidden>
     </div>
-    <button type="button" class="btn-ghost" id="btnReselect" hidden>重新选择目录</button>
   </div>
 </header>
 
@@ -73,7 +86,15 @@
 
       <div class="card">
         <div class="card-head">
-          <h2><span class="tag tag-purple">3</span>测量距离</h2>
+          <h2><span class="tag tag-purple">3</span>秒视训练视力</h2>
+          <p>秒视只给 3 秒辨认，测完填这里</p>
+        </div>
+        <div class="field-grid" id="secondFields"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2><span class="tag tag-amber">4</span>测量距离</h2>
           <p>单位：米。上下按钮每次调 1 米，也可以直接输入小数（填 2.50 表示 2 米 50，入库按厘米）</p>
         </div>
         <div class="field-grid" id="distFields"></div>
@@ -81,7 +102,7 @@
 
       <div class="card">
         <div class="card-head">
-          <h2><span class="tag tag-amber">4</span>备注</h2>
+          <h2><span class="tag tag-gray">5</span>备注</h2>
           <p>训练时长、孩子配合情况、有什么特殊情况都可以写</p>
         </div>
         <textarea id="remark" class="remark" rows="4"
@@ -128,6 +149,11 @@
           <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
         <div class="chart-box"><canvas id="chartPost"></canvas></div>
       </div>
+      <div class="card chart-card">
+        <div class="card-head"><h2><i class="dot dot-green"></i>秒视视力</h2>
+          <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
+        <div class="chart-box"><canvas id="chartSecond"></canvas></div>
+      </div>
     </div>
 
     <div class="card">
@@ -142,6 +168,7 @@
               <th>日期</th>
               <th>训前左</th><th>训前右</th><th>训前双</th>
               <th>强化左</th><th>强化右</th><th>强化双</th>
+              <th>秒视左</th><th>秒视右</th><th>秒视双</th>
               <th>测视距离(m)</th><th>训练距离(m)</th>
               <th>备注</th>
               <th>操作</th>
@@ -152,38 +179,155 @@
       </div>
     </div>
   </section>
+
+  <!-- ============ 测训 ============ -->
+  <section class="view" id="view-train" hidden>
+
+    <div class="card">
+      <div class="card-head">
+        <h2><span class="tag tag-blue">1</span>校准（图表校准）</h2>
+        <p>用实物尺子量下面这条白杠，把量到的毫米数填进去。标称 100 毫米，填完之后白杠会变成真正的 100 毫米，可以再量一次验证</p>
+      </div>
+      <div class="calib-bar"><div class="calib-ruler" id="calibRuler"></div></div>
+      <div class="calib-row">
+        <label for="calibInput">实测毫米数</label>
+        <input type="number" id="calibInput" min="20" max="500" step="1" placeholder="100">
+        <span class="calib-unit">mm</span>
+      </div>
+      <p class="calib-hint" id="calibHint"></p>
+      <p class="calib-warn">换一台电脑、或者改了浏览器缩放，都要重新量一次。</p>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2><span class="tag tag-green">2</span>设置</h2>
+        <p>改完立刻生效并保存，下次打开还是这些设置</p>
+      </div>
+
+      <div class="set-row">
+        <div class="set-label">图标个数<b>一次最多展示几个，0–8</b></div>
+        <div class="set-ctl">
+          <input type="number" id="setMaxDisplay" min="0" max="8" step="1">
+          <span class="set-note" id="maxDisplayNote"></span>
+        </div>
+      </div>
+
+      <div class="set-row">
+        <div class="set-label">确认效果<b>答对答错时给什么反馈</b></div>
+        <div class="set-ctl">
+          <div class="seg" id="setEffect">
+            <button type="button" data-val="GAME">游戏效果</button>
+            <button type="button" data-val="COLOR">颜色效果</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="set-row">
+        <div class="set-label">强化次数<b>一个档答对几次算通过</b></div>
+        <div class="set-ctl">
+          <input type="number" id="setEnhance" min="0" max="20" step="1">
+        </div>
+      </div>
+
+      <div class="set-row">
+        <div class="set-label">记录时机<b>答对时怎么记这一档的视力</b></div>
+        <div class="set-ctl">
+          <div class="seg" id="setRequire">
+            <button type="button" data-val="BEST">取最好一次</button>
+            <button type="button" data-val="LAST">取最后一次</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2><span class="tag tag-purple">3</span>开始</h2>
+        <p>选好训练方式和眼睛，点「开始训练」会全屏显示视标</p>
+      </div>
+
+      <div class="pick-group">
+        <span class="pick-label">训练方式</span>
+        <div class="pick" id="pickModes">
+          <button type="button" data-idx="0">测视</button>
+          <button type="button" data-idx="1">训练</button>
+          <button type="button" data-idx="2">秒视</button>
+        </div>
+      </div>
+
+      <div class="pick-group">
+        <span class="pick-label">训练眼睛</span>
+        <div class="pick" id="pickEyes">
+          <button type="button" data-idx="0">左眼</button>
+          <button type="button" data-idx="1">右眼</button>
+          <button type="button" data-idx="2">双眼</button>
+        </div>
+      </div>
+
+      <div class="start-row">
+        <button type="button" class="btn-primary btn-lg" id="btnStartTrain">开始训练</button>
+        <span class="start-tip" id="startTip"></span>
+      </div>
+    </div>
+  </section>
 </main>
 
-<!-- ============ 初始化遮罩 ============ -->
-<div class="overlay" id="overlay">
+<!-- ============ 首次说明页（只显示一次） ============ -->
+<div class="overlay" id="introOverlay" hidden>
   <div class="overlay-card">
-    <svg class="overlay-icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3z"/>
-      <path d="M4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/>
-      <path d="M20 12c0 1.7-3.6 3-8 3s-8-1.3-8-3"/>
-    </svg>
-    <h2 id="overlayTitle">数据库还没初始化</h2>
+    <h2>开始之前，请花 10 秒看一下</h2>
     <p class="overlay-lead">
-      所有记录都保存在 <code>eyerecord</code> 这个 SQLite 文件里。
-      网页不能自己翻硬盘，需要你告诉它这个文件放在哪儿 —— 只需做一次。
+      记录是<b>保存在这个浏览器里</b>的，不是硬盘上的某个文件。所以请记住这几件事：
     </p>
-    <ol class="overlay-steps" id="overlaySteps">
-      <li>点下面的「初始化数据库」</li>
-      <li>在弹出的文件夹选择框里，选中 <b>index.html 所在的那个文件夹</b></li>
-      <li>以后再打开页面会自动连接；浏览器要是记不住目录，顶栏会显示「未记住目录」，那就需要再选一次</li>
+    <ol class="overlay-steps">
+      <li>想留个底、或者要换电脑，点顶栏的 <b>「导出备份」</b>，会下载一个文件，存到 U 盘或网盘里。</li>
+      <li>要换回来的时候，点顶栏的 <b>「导入」</b>，选中那个备份文件就行。</li>
+      <li><b>不要把 index.html 挪到别的文件夹。</b>浏览器是按文件夹分开存放的，挪走之后记录会像消失了一样（挪回来就又有了）。</li>
     </ol>
-    <button type="button" class="btn-primary btn-xl" id="btnInit">初始化数据库</button>
-    <button type="button" class="btn-primary btn-xl" id="btnReconnect" hidden>继续（连接数据目录）</button>
-    <p class="overlay-tip" id="overlayTip">建议使用 Chrome 或 Edge 浏览器（需要它们才能写回本地文件）</p>
+    <p class="overlay-tip">
+      另外：清理浏览器数据（缓存 / Cookie）会连记录一起清掉，清之前记得先导出一份备份。
+    </p>
+    <button type="button" class="btn-primary btn-xl" id="introOk">我知道了，开始记录</button>
+  </div>
+</div>
 
-    <div class="overlay-fallback" id="fallbackBox" hidden>
-      <div class="overlay-fallback-title">当前浏览器不支持直接写回本地文件</div>
-      <p>只有 Chrome / Edge 能自动保存。你仍然可以手动导入导出：</p>
-      <div class="overlay-fallback-btns">
-        <button type="button" class="btn-soft" id="btnImportFile">打开已有的 eyerecord 文件</button>
-        <button type="button" class="btn-soft" id="btnNewEmpty">先不导入，直接开始记</button>
-      </div>
-      <input type="file" id="fileImport" hidden>
+<!-- ============ 切换用户对话框 ============ -->
+<div class="overlay" id="userModal" hidden>
+  <div class="overlay-card user-card">
+    <h2>切换用户</h2>
+    <p class="overlay-lead">填孩子的名字。填过的名字会留在下面，点一下就能直接切过去。</p>
+    <input type="text" id="userInput" class="user-input" maxlength="20"
+      placeholder="例如：小明" autocomplete="off">
+    <div class="user-list" id="userList"></div>
+    <div class="user-actions">
+      <button type="button" class="btn-soft" id="btnUserCancel">取消</button>
+      <button type="button" class="btn-primary" id="btnUserSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 测训舞台（全屏） ============ -->
+<div class="train-stage" id="trainStage" hidden>
+  <div class="train-side" id="trainSide"></div>
+  <div class="train-canvas" id="trainCanvas"></div>
+  <div class="train-fx" id="trainFx"></div>
+
+  <div class="train-topwrap" id="trainTopwrap">
+    <div class="train-bar" id="trainBar">
+      <span class="train-bar-label">当前</span>
+      <div class="train-tabs" id="trainBarModes"></div>
+      <span class="train-bar-sep">/</span>
+      <div class="train-tabs" id="trainBarEyes"></div>
+      <button type="button" class="train-exit" id="btnExitTrain">退出训练</button>
+    </div>
+  </div>
+
+  <div class="train-resume" id="trainResume" hidden>
+    <p class="train-resume-title">已退出全屏</p>
+    <p class="train-resume-tip">继续训练会重新进入全屏</p>
+    <div class="train-resume-btns">
+      <button type="button" class="btn-primary" id="btnResumeTrain">继续训练</button>
+      <button type="button" class="btn-soft" id="btnQuitTrain">结束训练</button>
     </div>
   </div>
 </div>
@@ -194,6 +338,8 @@
 <script src="vendor/sql-wasm-binary.js"></script>
 <script src="vendor/chart.umd.js"></script>
 <script src="js/db.js"></script>
+<script src="js/chart-core.js"></script>
+<script src="js/train.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
