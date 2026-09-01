@@ -719,14 +719,17 @@ button { font-family: inherit; }
 }
 
 /* ============ 测训：设置 ============ */
-.set-row {
+.set-grid { display: flex; flex-direction: column; }
+.set-pair {
   display: flex;
-  align-items: flex-start;
-  gap: 24px;
+  gap: 48px;
   padding: 16px 0;
   border-bottom: 1px solid var(--line-2);
 }
-.set-row:last-child { border-bottom: 0; }
+.set-pair:last-child { border-bottom: 0; }
+.set-item { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.set-item .set-label { flex: none; }
+.set-item .set-ctl { flex: none; }
 .set-label {
   flex: 0 0 250px;
   font-size: 17px;
@@ -783,6 +786,8 @@ button { font-family: inherit; }
 }
 
 /* ============ 测训：开始 ============ */
+.pick-row { display: flex; gap: 24px; flex-wrap: wrap; }
+.pick-row .pick-group { flex: 1; margin-bottom: 14px; min-width: 260px; }
 .pick-group {
   display: flex;
   align-items: center;
@@ -810,8 +815,20 @@ button { font-family: inherit; }
   color: var(--primary);
   box-shadow: 0 2px 8px rgba(30, 45, 90, .12);
 }
-.start-row { display: flex; align-items: center; gap: 18px; margin-top: 26px; flex-wrap: wrap; }
-.start-tip { font-size: 15px; color: var(--amber); font-weight: 600; }
+.start-tip { font-size: 15px; color: var(--amber); font-weight: 600; margin-top: 14px; }
+
+/* 开始训练：悬浮在底部正中央，始终可点（仅测训页显示） */
+#view-train { padding-bottom: 92px; }
+.train-start-fab {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 22px;
+  z-index: 90;
+  min-width: 240px;
+  box-shadow: 0 10px 28px rgba(79, 124, 255, .38);
+}
+.train-start-fab:active { transform: translateX(-50%) scale(.97); }
 
 /* ============ 测训舞台（全屏） ============ */
 .train-stage {

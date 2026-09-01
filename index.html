@@ -21,9 +21,9 @@
   </div>
 
   <nav class="tabs" id="tabs">
-    <button type="button" class="tab is-active" data-view="today">当天记录</button>
+    <button type="button" class="tab" data-view="today">当天记录</button>
     <button type="button" class="tab" data-view="history">历史记录</button>
-    <button type="button" class="tab" data-view="train">测训</button>
+    <button type="button" class="tab is-active" data-view="train">测训</button>
   </nav>
 
   <div class="topbar-right">
@@ -53,7 +53,7 @@
 <main class="main">
 
   <!-- ============ 当天记录 ============ -->
-  <section class="view" id="view-today">
+  <section class="view" id="view-today" hidden>
 
     <div class="card date-bar">
       <button type="button" class="btn-nav" id="btnPrevDay">
@@ -181,7 +181,7 @@
   </section>
 
   <!-- ============ 测训 ============ -->
-  <section class="view" id="view-train" hidden>
+  <section class="view" id="view-train">
 
     <div class="card">
       <div class="card-head">
@@ -204,37 +204,41 @@
         <p>改完立刻生效并保存，下次打开还是这些设置</p>
       </div>
 
-      <div class="set-row">
-        <div class="set-label">图标个数<b>一次最多展示几个，0–8</b></div>
-        <div class="set-ctl">
-          <input type="number" id="setMaxDisplay" min="0" max="8" step="1">
-          <span class="set-note" id="maxDisplayNote"></span>
-        </div>
-      </div>
-
-      <div class="set-row">
-        <div class="set-label">确认效果<b>答对答错时给什么反馈</b></div>
-        <div class="set-ctl">
-          <div class="seg" id="setEffect">
-            <button type="button" data-val="GAME">游戏效果</button>
-            <button type="button" data-val="COLOR">颜色效果</button>
+      <div class="set-grid">
+        <div class="set-pair">
+          <div class="set-item">
+            <div class="set-label">图标个数<b>一次最多展示几个，0–8</b></div>
+            <div class="set-ctl">
+              <input type="number" id="setMaxDisplay" min="0" max="8" step="1">
+              <span class="set-note" id="maxDisplayNote"></span>
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="set-label">强化次数<b>一个档答对几次算通过</b></div>
+            <div class="set-ctl">
+              <input type="number" id="setEnhance" min="0" max="20" step="1">
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="set-row">
-        <div class="set-label">强化次数<b>一个档答对几次算通过</b></div>
-        <div class="set-ctl">
-          <input type="number" id="setEnhance" min="0" max="20" step="1">
-        </div>
-      </div>
-
-      <div class="set-row">
-        <div class="set-label">记录时机<b>答对时怎么记这一档的视力</b></div>
-        <div class="set-ctl">
-          <div class="seg" id="setRequire">
-            <button type="button" data-val="BEST">取最好一次</button>
-            <button type="button" data-val="LAST">取最后一次</button>
+        <div class="set-pair">
+          <div class="set-item">
+            <div class="set-label">确认效果<b>答对答错时给什么反馈</b></div>
+            <div class="set-ctl">
+              <div class="seg" id="setEffect">
+                <button type="button" data-val="GAME">游戏效果</button>
+                <button type="button" data-val="COLOR">颜色效果</button>
+              </div>
+            </div>
+          </div>
+          <div class="set-item">
+            <div class="set-label">记录时机<b>答对时怎么记这一档的视力</b></div>
+            <div class="set-ctl">
+              <div class="seg" id="setRequire">
+                <button type="button" data-val="BEST">取最好一次</button>
+                <button type="button" data-val="LAST">取最后一次</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -243,32 +247,32 @@
     <div class="card">
       <div class="card-head">
         <h2><span class="tag tag-purple">3</span>开始</h2>
-        <p>选好训练方式和眼睛，点「开始训练」会全屏显示视标</p>
+        <p>选好训练方式和眼睛，点页面底部「开始训练」会全屏显示视标</p>
       </div>
 
-      <div class="pick-group">
-        <span class="pick-label">训练方式</span>
-        <div class="pick" id="pickModes">
-          <button type="button" data-idx="0">测视</button>
-          <button type="button" data-idx="1">训练</button>
-          <button type="button" data-idx="2">秒视</button>
+      <div class="pick-row">
+        <div class="pick-group">
+          <span class="pick-label">训练方式</span>
+          <div class="pick" id="pickModes">
+            <button type="button" data-idx="0">测视</button>
+            <button type="button" data-idx="1">训练</button>
+            <button type="button" data-idx="2">秒视</button>
+          </div>
+        </div>
+        <div class="pick-group">
+          <span class="pick-label">训练眼睛</span>
+          <div class="pick" id="pickEyes">
+            <button type="button" data-idx="0">左眼</button>
+            <button type="button" data-idx="1">右眼</button>
+            <button type="button" data-idx="2">双眼</button>
+          </div>
         </div>
       </div>
 
-      <div class="pick-group">
-        <span class="pick-label">训练眼睛</span>
-        <div class="pick" id="pickEyes">
-          <button type="button" data-idx="0">左眼</button>
-          <button type="button" data-idx="1">右眼</button>
-          <button type="button" data-idx="2">双眼</button>
-        </div>
-      </div>
-
-      <div class="start-row">
-        <button type="button" class="btn-primary btn-lg" id="btnStartTrain">开始训练</button>
-        <span class="start-tip" id="startTip"></span>
-      </div>
+      <p class="start-tip" id="startTip"></p>
     </div>
+
+    <button type="button" class="btn-primary btn-lg train-start-fab" id="btnStartTrain">开始训练</button>
   </section>
 </main>
 
