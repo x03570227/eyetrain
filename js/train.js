@@ -5,8 +5,9 @@
  *   单击方向键     = 回答当前被红点指中的那个图标的朝向
  *   双击同一个方向 = 上/下切档，左切测试方式，右切训练眼睛
  *
- * 答对就按对照表把当前档位的视力值写进数据库（写的是「今天」，
- * 跟日期选择框里翻到哪一天无关），答对次数达到强化次数就前进一档。
+ * 写库规则：本档答对次数达到「强化次数」才写（写的是「今天」，跟日期选择框翻到
+ * 哪一天无关）。只答对一次就写，会把蒙对的档位记成真实水平。达标之后怎么办，
+ * 三种模式各不相同，见 afterCorrect()。
  * ============================================================= */
 (function (global) {
   'use strict';
@@ -49,7 +50,9 @@
     modeIdx: 0, eyeIdx: 0,
     level: 0,
     dirs: [], selected: 0, centers: [],
-    success: 0,
+    success: 0,     // 本档答对次数：够「强化次数」才有资格写库
+    total: 0,       // 本档总作答次数（对 + 错），算成功率用
+    saved: false,   // 本档是否已写过库：达标后每次答对都写是白费一次全库导出
     generation: 0,     // 每次重画自增：延迟触发的按键动作靠它判断自己是否已过期
     locked: false,
     pending: null,
@@ -168,10 +171,35 @@
 
   /* ---------------- 档位 / 模式 / 眼睛 ---------------- */
 
-  /** 切换模式或眼睛都要回到第 0 档、清空成功次数 */
+  /** 本档成功率（0–1），一次都没答过时算 0 */
+  function rate() { return st.total > 0 ? st.success / st.total : 0; }
+
+  /** 底部浮动统计条：show=false 直接收起来 */
+  function renderStats(show) {
+    const box = st.els.stats;
+    if (!show) { box.hidden = true; return; }
+    box.hidden = false;
+    st.els.statTotal.textContent = st.total;
+    st.els.statSuccess.textContent = st.success;
+    st.els.statRate.textContent = Math.round(rate() * 100) + '%';
+    box.classList.toggle('is-low', rate() < 0.5);   // 不到一半用红字
+  }
+
+  /**
+   * 换档 / 换模式 / 换眼睛都要把本档的计数清零。
+   * 统计条也要一起收掉 —— 它显示的是上一档的次数，留着会看错。
+   */
+  function resetCounters() {
+    st.success = 0;
+    st.total = 0;
+    st.saved = false;
+    renderStats(false);
+  }
+
+  /** 切换模式或眼睛都要回到第 0 档、清空计数 */
   function resetLevel() {
     st.level = 0;
-    st.success = 0;
+    resetCounters();
     renderBar();
     draw();
   }
@@ -179,9 +207,10 @@
   function setMode(i) { st.modeIdx = i; resetLevel(); }
   function setEye(i) { st.eyeIdx = i; resetLevel(); }
 
+  /** 只换档，不写库：手动切到下一档不算这个档位练成了 */
   function gotoLevel(i) {
     st.level = clamp(i, 0, global.EyeChart.LEVELS.length - 1);
-    st.success = 0;   // 换档就重新计数，免得上一档的次数串到这一档
+    resetCounters();
     draw();
   }
 
@@ -225,25 +254,64 @@
 
   /* ---------------- 作答 ---------------- */
 
-  function answer(dir) {
-    const correct = dir === st.dirs[st.selected];
-
-    if (!correct) {
-      showEffect(false, () => draw());   // 认错了，同档重画
-      return;
-    }
-
-    st.success++;
+  /** 把当前档位的视力值写进今天这条记录。同一档只写一次，达标后每次答对都写是白费一次全库导出 */
+  function saveCurrentLevel() {
+    if (st.saved) return;
+    st.saved = true;
     // 写「今天」这一天：训练是当下发生的，跟日期选择框翻到哪天无关
     global.EyeDB.recordVision(
       st.userId, todayStr(), currentField(), level().V, st.config.record_require
     );
+  }
 
-    showEffect(true, () => {
-      // 答对次数达到强化次数就进一档，否则同档换一组新图标
-      if (st.success >= st.config.enhance_count) gotoLevel(st.level + 1);
-      else draw();
-    });
+  function answer(dir) {
+    const correct = dir === st.dirs[st.selected];
+    st.total++;
+    if (!correct) {
+      showEffect(false, afterWrong);
+      return;
+    }
+    st.success++;
+    showEffect(true, afterCorrect);
+  }
+
+  /** 答错：够不上写库门槛，最多把正在显示的统计条刷新一下，然后同档重画 */
+  function afterWrong() {
+    if (!st.els.stats.hidden) renderStats(true);
+    draw();
+  }
+
+  /**
+   * 答对之后统一判定：本档答对次数够不够「强化次数」，够了三种模式各走各的。
+   *   测视 —— 写库，并自动进下一档
+   *   训练 —— 写库，但不进档，底部常驻统计条；档位全由用户双击上下键决定
+   *   秒视 —— 成功率过半才算这一档练成：写库并进下一档；
+   *           没过半就把统计条（红字）亮出来继续练，等成功率上来再写库进档
+   */
+  function afterCorrect() {
+    if (st.success < st.config.enhance_count) { draw(); return; }
+
+    if (modeKey() === 'TEST') {
+      saveCurrentLevel();
+      gotoLevel(st.level + 1);
+      return;
+    }
+
+    if (modeKey() === 'TRAIN') {
+      saveCurrentLevel();
+      renderStats(true);
+      draw();                     // 同档继续练，不自动进档
+      return;
+    }
+
+    // 秒视
+    if (rate() > 0.5) {
+      saveCurrentLevel();
+      gotoLevel(st.level + 1);
+      return;
+    }
+    renderStats(true);
+    draw();
   }
 
   /* ---------------- 键盘 ---------------- */
@@ -422,6 +490,8 @@
       stage: 'trainStage', canvas: 'trainCanvas', fx: 'trainFx', side: 'trainSide',
       barModes: 'trainBarModes', barEyes: 'trainBarEyes', bar: 'trainBar',
       topwrap: 'trainTopwrap', resume: 'trainResume',
+      stats: 'trainStats', statTotal: 'statTotal',
+      statSuccess: 'statSuccess', statRate: 'statRate',
       btnExit: 'btnExitTrain', btnResume: 'btnResumeTrain', btnQuit: 'btnQuitTrain'
     };
     st.els = {};

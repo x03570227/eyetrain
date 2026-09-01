@@ -817,7 +817,9 @@ button { font-family: inherit; }
 }
 .start-tip { font-size: 15px; color: var(--amber); font-weight: 600; margin-top: 14px; }
 
-/* 开始训练：悬浮在底部正中央，始终可点（仅测训页显示） */
+/* 开始训练：悬浮在底部正中央，始终可点（仅测训页显示）
+   注意：居中靠 translateX(-50%)，而 .btn-primary:hover 会把 transform 整条覆盖掉，
+   所以 hover/active 必须把 -50% 一起写回去，否则鼠标一放上去按钮就会往右跳半格。 */
 #view-train { padding-bottom: 92px; }
 .train-start-fab {
   position: fixed;
@@ -828,7 +830,9 @@ button { font-family: inherit; }
   min-width: 240px;
   box-shadow: 0 10px 28px rgba(79, 124, 255, .38);
 }
+.train-start-fab:hover { transform: translateX(-50%) translateY(-1px); box-shadow: 0 14px 32px rgba(79, 124, 255, .44); }
 .train-start-fab:active { transform: translateX(-50%) scale(.97); }
+.train-start-fab:disabled { transform: translateX(-50%); }
 
 /* ============ 测训舞台（全屏） ============ */
 .train-stage {
@@ -927,6 +931,37 @@ button { font-family: inherit; }
   background: var(--primary);
   color: #fff;
 }
+
+/* 底部浮动统计：总次数 / 成功次数 / 成功率
+   训练模式达标后常驻；秒视成功率不到一半时提示（红字）并继续练。
+   [hidden] 要显式写：display:flex 会盖掉浏览器默认的 hidden 样式。 */
+.train-stats {
+  position: absolute;
+  bottom: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;                        /* 同顶部悬浮条一层，低于 .train-resume(3) */
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 12px 26px;
+  border-radius: 999px;
+  background: rgba(28, 35, 51, .93);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .25);
+  color: #fff;
+  white-space: nowrap;
+}
+.train-stats[hidden] { display: none; }
+.stat-item { font-size: 15px; color: #c3cbd9; }
+.stat-item b {
+  margin-left: 6px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.stat-rate { color: #6ee7a8; }                       /* 过半：绿 */
+.train-stats.is-low .stat-rate { color: #ff6b76; }   /* 不到 50%：红 */
 
 /* 顶部悬浮条：hotspot 和下拉条在同一个容器里，避免鼠标过缝时闪烁 */
 .train-topwrap {
