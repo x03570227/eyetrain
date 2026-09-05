@@ -963,6 +963,33 @@ button { font-family: inherit; }
 .stat-rate { color: #6ee7a8; }                       /* 过半：绿 */
 .train-stats.is-low .stat-rate { color: #ff6b76; }   /* 不到 50%：红 */
 
+/* 左下/右下角眼睛指示：训练哪只眼就亮哪边的颜色（双眼两边都亮） */
+.train-eye {
+  position: absolute;
+  bottom: 28px;
+  width: 46px; height: 46px;
+  border-radius: 999px;
+  pointer-events: none;
+  z-index: 2;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .22);
+}
+.train-eye-left { left: 28px; background: #e8323f; }    /* 左眼：红 */
+.train-eye-right { right: 28px; background: #2bb673; }  /* 右眼：绿 */
+.train-eye[hidden] { display: none; }
+
+/* 右上角：当前训练模式，用颜色表示（黑=训练 红=秒视 绿=测视） */
+.train-mode-badge {
+  position: absolute;
+  top: 22px; right: 26px;
+  z-index: 2;
+  width: 44px; height: 44px;
+  border-radius: 999px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .22);
+}
+.train-mode-badge.mode-TEST { background: #4f7cff; }    /* 测视：蓝 */
+.train-mode-badge.mode-TRAIN { background: #1c2333; }   /* 训练：黑 */
+.train-mode-badge.mode-SECOND { background: #8b5cf6; }  /* 秒视：紫 */
+
 /* 顶部悬浮条：hotspot 和下拉条在同一个容器里，避免鼠标过缝时闪烁 */
 .train-topwrap {
   position: absolute;

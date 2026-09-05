@@ -143,6 +143,21 @@
     for (let i = 0; i < eyes.length; i++) {
       eyes[i].classList.toggle('is-on', i === st.eyeIdx);
     }
+    renderEyes();
+    renderModeBadge();
+  }
+
+  /** 左下/右下角眼睛图案：随训练眼切换（左眼→左、右眼→右、双眼→两个都亮） */
+  function renderEyes() {
+    const eye = EYES[st.eyeIdx].key;   // LEFT / RIGHT / BOTH
+    st.els.eyeLeft.hidden = (eye === 'RIGHT');
+    st.els.eyeRight.hidden = (eye === 'LEFT');
+  }
+
+  /** 右上角：用颜色表示当前训练模式（黑=训练 蓝=测视 紫=秒视），颜色由 CSS 按类名切换。
+      不用红/绿，避免和左下/右下角的眼睛指示（红=左眼 绿=右眼）撞色 */
+  function renderModeBadge() {
+    st.els.modeBadge.className = 'train-mode-badge mode-' + MODES[st.modeIdx].key;
   }
 
   function buildBar() {
@@ -275,42 +290,49 @@
     showEffect(true, afterCorrect);
   }
 
-  /** 答错：够不上写库门槛，最多把正在显示的统计条刷新一下，然后同档重画 */
+  /**
+   * 答错之后：
+   *   训练模式 —— 认错了要留在同一组图案上接着练，所以不换图案（只把已显示的统计条刷新一下）；
+   *   测视/秒视 —— 换一组新图案（同档）。
+   */
   function afterWrong() {
     if (!st.els.stats.hidden) renderStats(true);
-    draw();
+    if (modeKey() !== 'TRAIN') draw();   // 训练模式保留当前图案
   }
 
   /**
    * 答对之后统一判定：本档答对次数够不够「强化次数」，够了三种模式各走各的。
-   *   测视 —— 写库，并自动进下一档
-   *   训练 —— 写库，但不进档，底部常驻统计条；档位全由用户双击上下键决定
-   *   秒视 —— 成功率过半才算这一档练成：写库并进下一档；
+   *   测视 —— 成功次数 >= 强化次数：写库，并自动进下一档
+   *   训练 —— 成功次数 > 强化次数 且 成功率 > 50% 才写库；不进档，底部常驻统计条，
+   *           档位全由用户双击上下键决定（按 Enter 也能手动换图案）
+   *   秒视 —— 成功次数 >= 强化次数 且 成功率 > 50%：写库并进下一档；
    *           没过半就把统计条（红字）亮出来继续练，等成功率上来再写库进档
    */
   function afterCorrect() {
-    if (st.success < st.config.enhance_count) { draw(); return; }
+    const need = st.config.enhance_count;
+    const reached = st.success >= need;   // 达到次数门槛就亮统计条
 
     if (modeKey() === 'TEST') {
-      saveCurrentLevel();
-      gotoLevel(st.level + 1);
+      if (reached) { saveCurrentLevel(); gotoLevel(st.level + 1); return; }
+      draw();
       return;
     }
 
     if (modeKey() === 'TRAIN') {
-      saveCurrentLevel();
-      renderStats(true);
-      draw();                     // 同档继续练，不自动进档
+      // 写库条件：成功次数 > 强化次数 且 成功率 > 50%（严格大于，不是 >=）
+      if (st.success > need && rate() > 0.5) saveCurrentLevel();
+      renderStats(reached);   // 达到次数门槛就常驻显示，不自动进档
+      draw();                 // 答对换图案
       return;
     }
 
     // 秒视
-    if (rate() > 0.5) {
+    if (reached && rate() > 0.5) {
       saveCurrentLevel();
       gotoLevel(st.level + 1);
       return;
     }
-    renderStats(true);
+    renderStats(reached);
     draw();
   }
 
@@ -330,9 +352,17 @@
     st.pressTimer = setTimeout(() => canvas.classList.remove('is-pressed'), 130);
   }
 
+  /** 回车：训练模式下直接换一组新图案（不作答、不计数，给操作者一个「跳过当前这组」的手段） */
+  function onEnter() {
+    if (!st.active || st.paused || st.exiting || st.locked) return;
+    if (modeKey() !== 'TRAIN') return;          // 仅训练模式支持手动换图案
+    draw();
+  }
+
   function onKeyDown(e) {
     if (!st.active || st.paused || st.exiting) return;
     if (e.repeat) return;                       // 长按产生的重复事件直接丢掉
+    if (e.key === 'Enter') { onEnter(); return; }
     const dir = KEY_DIR[e.key];
     if (dir === undefined) return;
     e.preventDefault();
@@ -492,6 +522,8 @@
       topwrap: 'trainTopwrap', resume: 'trainResume',
       stats: 'trainStats', statTotal: 'statTotal',
       statSuccess: 'statSuccess', statRate: 'statRate',
+      eyeLeft: 'trainEyeLeft', eyeRight: 'trainEyeRight',
+      modeBadge: 'trainModeBadge',
       btnExit: 'btnExitTrain', btnResume: 'btnResumeTrain', btnQuit: 'btnQuitTrain'
     };
     st.els = {};
