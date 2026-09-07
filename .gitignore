@@ -1,0 +1,27 @@
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志
+*.log
+
+# 备份与临时文件
+*.bak
+*.orig
+*.tmp
+
+# 顶栏「导出备份」下载的数据文件（eyerecord-YYYY-MM-DD）
+eyerecord-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]
+*.sqlite
+*.sqlite3
+*.db
+
+ai/
