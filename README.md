@@ -74,7 +74,6 @@
   - **上层是 SQLite**（[sql.js](https://github.com/sql-js/sql.js)，SQLite 编译成 WASM），整个库在**浏览器内存里**跑，页面里的查询、建表、唯一约束都是真 SQL；
   - **下层是 IndexedDB**，只负责持久化：每次改动把整个 SQLite 库导出成一份**二进制快照**存进去，打开页面时再整份读回来。
   - 换句话说，IndexedDB 里存的是「一个 SQLite 文件的字节」，不是按条存的业务记录。这样刷新、关浏览器都不丢。
-  - 曾经试过直接选目录写回本地文件，但 `file://` 下用不了（见下方说明），所以自动保存只剩 IndexedDB 这一条路。
 - **IndexedDB 里那份是唯一的副本**，所以：
   - 跨设备搬移数据只能靠顶栏的「导出备份 / 导入」。导出会下载一个 `eyerecord-YYYY-MM-DD` 文件，导入时选中它即可。
   - **清理浏览器数据（缓存 / Cookie）会连记录一起清掉**，清之前一定先导出一份。
@@ -109,9 +108,9 @@
 ## 技术栈
 
 - 原生 HTML / CSS / JavaScript，**零构建、零框架**
-- [sql.js](https://github.com/sql-js/sql.js) — SQLite 编译成 WASM，在浏览器里跑真正的 SQL
+- [sql.js](https://github.com/sql-js/sql.js) — SQLite 编译成 WASM，在浏览器内存里跑真正的 SQL
 - [Chart.js](https://www.chartjs.org/) 4.5.1 — 折线图
-- IndexedDB — 数据库快照的持久化
+- IndexedDB — 只做持久化，存整个 SQLite 库的二进制快照（不是按条存记录）
 
 ## 浏览器支持
 
