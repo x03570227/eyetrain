@@ -39,7 +39,7 @@
       <span class="db-dot" id="dbDot"></span>
       <div class="db-text">
         <strong id="dbStateTitle">未连接</strong>
-        <span id="dbStateDesc">正在打开数据库…</span>
+        <span id="dbStateDesc">正在读取浏览器存储…</span>
       </div>
       <button type="button" class="btn-ghost" id="btnExport" hidden>导出备份</button>
       <button type="button" class="btn-ghost" id="btnImport" hidden>导入</button>
@@ -305,8 +305,8 @@
       记录是<b>保存在这个浏览器里</b>的，不是硬盘上的某个文件。所以请记住这几件事：
     </p>
     <ol class="overlay-steps">
-      <li>想留个底、或者要换电脑，点顶栏的 <b>「导出备份」</b>，会下载一个文件，存到 U 盘或网盘里。</li>
-      <li>要换回来的时候，点顶栏的 <b>「导入」</b>，选中那个备份文件就行。</li>
+      <li>想留个底、或者要换电脑，点顶栏的 <b>「导出备份」</b>，会下载一个 JSON 文件，存到 U 盘或网盘里。</li>
+      <li>要换回来的时候，点顶栏的 <b>「导入」</b>，选中那个 JSON 备份就行；<b>旧版本导出的备份也能直接导入</b>，会自动转换成新格式。</li>
       <li><b>不要把 index.html 挪到别的文件夹。</b>浏览器是按文件夹分开存放的，挪走之后记录会像消失了一样（挪回来就又有了）。</li>
     </ol>
     <p class="overlay-tip">
@@ -374,8 +374,6 @@
 
 <div class="toast" id="toast" hidden></div>
 
-<script src="vendor/sql-wasm.js"></script>
-<script src="vendor/sql-wasm-binary.js"></script>
 <script src="vendor/chart.umd.js"></script>
 <script src="js/db.js"></script>
 <script src="js/chart-core.js"></script>

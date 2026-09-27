@@ -90,17 +90,21 @@
 
 ## 数据存在哪里 / 怎么备份（重要）
 
-- 存储分两层，别弄混：
-  - **上层是 SQLite**（[sql.js](https://github.com/sql-js/sql.js)，SQLite 编译成 WASM），整个库在**浏览器内存里**跑，页面里的查询、建表、唯一约束都是真 SQL；
-  - **下层是 IndexedDB**，只负责持久化：每次改动把整个 SQLite 库导出成一份**二进制快照**存进去，打开页面时再整份读回来。
-  - 换句话说，IndexedDB 里存的是「一个 SQLite 文件的字节」，不是按条存的业务记录。这样刷新、关浏览器都不丢。
+- 数据直接以 **JSON 对象**的形式存在浏览器的 **IndexedDB** 里，没有 SQLite、没有 WASM：
+  - `users` 仓库：每个用户一行配置（强化次数、确认效果、记录时机、校准值等），主键是用户 ID；
+  - `records` 仓库：每天一条记录；
+  - `meta` 仓库：只放「首次说明页看过没」这类小标记。
+- 打开页面时会把数据整体读进内存，页面里的读取是同步的，任何改动都立刻异步写回 IndexedDB。刷新、关浏览器都不丢。
 - **IndexedDB 里那份是唯一的副本**，所以：
-  - 跨设备搬移数据只能靠顶栏的「导出备份 / 导入」。导出会下载一个 `eyerecord-YYYY-MM-DD` 文件，导入时选中它即可。
+  - 跨设备搬移数据只能靠顶栏的「导出备份 / 导入」。导出会下载一个 `eyerecord-YYYY-MM-DD.json` 文件，导入时选中它即可。
   - **清理浏览器数据（缓存 / Cookie）会连记录一起清掉**，清之前一定先导出一份。
   - 换浏览器、换电脑也要先导出再导入。
 - **不要把 `index.html` 挪到别的文件夹。** 浏览器是按 html 文件所在目录分区存储 IndexedDB 的，挪走之后记录会像「消失」了一样（挪回来就又有了）。
 - 如果浏览器没有 IndexedDB，会自动降级成「内存模式」：可用，但每次保存都会自动下载一份备份文件，关闭页面即丢失，需要手动导入。
-- 导出的备份就是标准 SQLite 文件，也可以用 [DB Browser for SQLite](https://sqlitebrowser.org/) 或 `sqlite3` 直接打开查看。
+- 导出的是 **UTF-8 的 JSON 文件**，可以直接用文本编辑器打开查看，也方便自己写脚本处理。
+- **兼容旧版本**：
+  - 从旧的 sql.js 版本升级上来，第一次打开时浏览器里遗留的 SQLite 快照会**自动迁移**成新格式，不需要手动操作；
+  - 旧版本导出的 SQLite 备份文件也能直接用顶栏的「导入」读进来。项目内置了一个**只读的 SQLite 文件解析器**专门做这件事（只解析表数据、支持溢出页和 UTF-8/UTF-16 文本），因此不再需要加载 sql.js。
 
 > 为什么不用「选目录写回本地文件」：`file://` 协议下页面源是 `null`（不透明源），File System Access API / OPFS 会被浏览器硬性禁用，双击打开 html 时根本调不了。
 
@@ -114,13 +118,11 @@
 ├── assets/
 │   └── style.css           # 样式
 ├── js/
-│   ├── db.js               # 数据层：sql.js 建表/查询 + 快照存入 IndexedDB、导出/导入
+│   ├── db.js               # 数据层：IndexedDB 读写 + JSON 导入导出 + 旧版 SQLite 备份解析
 │   ├── chart-core.js       # 视标绘制与档位表（4.0~5.3 / 0.1~2.0）
 │   ├── train.js            # 测训舞台：全屏视标、作答判定、写库规则
 │   └── app.js              # 页面逻辑：当天记录、历史图表、用户切换
 ├── vendor/                 # 第三方库（已随仓库提供，无需 npm）
-│   ├── sql-wasm.js         # sql.js
-│   ├── sql-wasm-binary.js  # SQLite WASM（base64 内嵌，避免 file:// 下的跨域加载）
 │   └── chart.umd.js        # Chart.js v4.5.1
 └── ai/                     # 需求与设计文档（开发参考，运行时不需要）
 ```
@@ -128,9 +130,8 @@
 ## 技术栈
 
 - 原生 HTML / CSS / JavaScript，**零构建、零框架**
-- [sql.js](https://github.com/sql-js/sql.js) — SQLite 编译成 WASM，在浏览器内存里跑真正的 SQL
 - [Chart.js](https://www.chartjs.org/) 4.5.1 — 折线图
-- IndexedDB — 只做持久化，存整个 SQLite 库的二进制快照（不是按条存记录）
+- IndexedDB — 业务数据按对象存储（`users` / `records` / `meta` 三个仓库），不用 SQLite
 
 ## 浏览器支持
 
@@ -144,32 +145,56 @@
 
 ---
 
-## 数据表
+## 数据格式
 
-```sql
-CREATE TABLE vision_train_record (
-  id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id        TEXT NOT NULL,     -- 关联用户
-  record_date    TEXT NOT NULL,     -- 记录日期 YYYY-MM-DD
-  pre_left       REAL,              -- 训前左眼
-  pre_right      REAL,              -- 训前右眼
-  pre_both       REAL,              -- 训前双眼
-  train_left     REAL,              -- 强化训练左眼
-  train_right    REAL,              -- 强化训练右眼
-  train_both     REAL,              -- 强化训练双眼
-  second_left    REAL,              -- 秒视左眼
-  second_right   REAL,              -- 秒视右眼
-  second_both    REAL,              -- 秒视双眼
-  test_distance  INTEGER,           -- 测视距离，单位 cm
-  train_distance INTEGER,           -- 强化训练距离，单位 cm
-  remark         TEXT,              -- 备注
-  gmt_created    DATETIME DEFAULT CURRENT_TIMESTAMP,
-  gmt_modified   DATETIME DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(user_id, record_date)
-);
+数据以 JSON 对象保存，导出文件（`eyerecord-YYYY-MM-DD.json`）就是下面这个结构：
+
+```jsonc
+{
+  "format": "eyerecord",     // 格式标识，导入时用来识别自家备份
+  "version": 2,              // 格式版本号
+  "app": "视力训练记录台",
+  "exportedAt": "2026-01-01T00:00:00.000Z",
+  "users": [
+    {
+      "id": 1,                       // 仅用于排序
+      "user_id": "80202401011234567890",
+      "user_name": "小明",
+      "effect_confirm": "GAME",      // GAME 游戏效果 / COLOR 颜色效果
+      "enhance_count": 4,            // 强化次数：答对几次算通过当前档
+      "record_require": "BEST",      // 记录时机：BEST 取最好 / LAST 取最后一次
+      "chart_calibration": 100,      // 图表校准：实测毫米数
+      "max_display_count": 1,        // 一次最多展示几个图标
+      "gmt_created": "2024-01-01 01:23:45",   // UTC
+      "gmt_modified": "2024-06-01 02:00:00",  // UTC
+      "remark": null
+    }
+  ],
+  "records": [
+    {
+      "id": 1,
+      "user_id": "80202401011234567890",
+      "record_date": "2024-03-01",   // YYYY-MM-DD
+      "pre_left": 0.4,               // 训前左眼
+      "pre_right": 0.5,              // 训前右眼
+      "pre_both": 0.6,               // 训前双眼
+      "train_left": 0.6,             // 强化训练左眼
+      "train_right": 0.7,            // 强化训练右眼
+      "train_both": 0.8,             // 强化训练双眼
+      "second_left": 0.5,            // 秒视左眼
+      "second_right": 0.6,           // 秒视右眼
+      "second_both": 0.7,            // 秒视双眼
+      "test_distance": 500,          // 测视距离，单位 cm
+      "train_distance": 900,         // 强化训练距离，单位 cm
+      "remark": "训练 20 分钟",
+      "gmt_created": "2024-03-01 08:00:00",
+      "gmt_modified": "2024-03-02 09:30:00"
+    }
+  ]
+}
 ```
 
-另有 `user_config` 表保存每个用户的测训设置（强化次数、确认效果、记录时机、图表校准、一次展示几个图标等）。首次打开自动建库建表，无需任何初始化步骤。
+约定：`(user_id, record_date)` 唯一，一个用户一天一条；没填的视力字段是 `null`（不是 0），折线图会自动跳过空值。首次打开自动建库，无需任何初始化步骤；导入会整体覆盖当前数据，导入前建议先导出一份。
 
 ---
 
@@ -185,7 +210,7 @@ A：最常见的原因是 `index.html` 被挪到了别的文件夹（IndexedDB �
 A：视标按 5 米标定边长绘制，**不做观看距离缩放**。如果孩子不是站在 5 米处测，结果本身就会有偏差，这不是 bug。屏幕校准也请务必先做一次。
 
 **Q：数据会不会被传到网上？**
-A：不会。整个项目没有任何网络请求、没有账号体系，数据库只存在你自己的浏览器里。
+A：不会。整个项目没有任何网络请求、没有账号体系，数据只存在你自己的浏览器里。
 
 ---
 

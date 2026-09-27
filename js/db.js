@@ -1,15 +1,22 @@
 /* =============================================================
- * js/db.js — 数据层
+ * js/db.js — 数据层（纯浏览器存储版，不再依赖 SQLite）
  *
- * 实现方式：
- *   1. 用 sql.js（SQLite 编译成 WASM）在内存里跑一个真正的 SQLite；
- *   2. 把整个数据库导出成二进制快照，存进浏览器 IndexedDB。
+ * 存储方式：
+ *   1. 业务数据本身直接以对象形式存在 IndexedDB 里：
+ *        - users   对象仓库，主键 user_id，一个用户一行配置
+ *        - records 对象仓库，主键 id，一条日记录一行
+ *        - meta    对象仓库，存「首次说明页看过没」这类小标记
+ *   2. 内存里维护一份完整副本，页面上的读取（getByDate / listRange / listUsers）
+ *      都是同步的，写入先改内存再异步落盘，落盘结果作为返回值告诉上层。
+ *   3. 导出 / 导入统一切到 JSON：导出的是一份带版本号的结构化文件，
+ *      导入同时兼容：
+ *        - 新版 JSON 备份；
+ *        - 旧版（sql.js 时代）导出的 SQLite 二进制备份，以及浏览器里遗留的
+ *          旧版 SQLite 快照 —— 用一个只读的 SQLite 文件解析器读出数据再转成 JSON。
  *
- * 为什么不再用 File System Access API（选目录、写回 eyerecord 文件）：
- *   file:// 协议下页面的源是 null（不透明源），FSA / OPFS 会被浏览器硬性禁用
- *   （调用直接抛 SecurityError），双击打开 html 时根本用不了。而 IndexedDB 在
- *   file:// 下可用，Chrome 按 html 文件所在的目录做分区存储（同目录共享一份，
- *   换目录就是另一份）。所以自动保存只保留 IndexedDB 这一条路径。
+ * 为什么不再用 sql.js：
+ *   sql.js 会把约 1MB 的 WASM 打进页面，而这里的数据量很小、查询也简单，
+ *   直接按对象存 IndexedDB 更快、更省内存，也少一层「整体导出二进制快照」的开销。
  *
  * 两种模式：
  *   idb     — 正常路径，每次改动即时写入 IndexedDB，刷新 / 重开浏览器都不丢。
@@ -21,86 +28,57 @@
 (function (global) {
   'use strict';
 
-  const DB_FILE_NAME = 'eyerecord';
+  /* ---------------- 常量 ---------------- */
+
   const IDB_NAME = 'eyerecord-app';
-  /* 版本号保持 2 不再升：去掉目录句柄后没有结构性变更，升版反而会在别的标签页
-     占着旧版本时触发 onblocked，直接退化成内存模式。旧库里残留的 'handles'
-     store 只是无害死数据，不读不写即可。 */
-  const IDB_VERSION = 2;
-  const IDB_STORE = 'db';
-  const IDB_BYTES_KEY = 'bytes';   // 整个数据库的二进制快照
-  const IDB_INTRO_KEY = 'intro';   // 首次说明页是否看过（与快照分开存，导入备份不会把它冲掉）
+  /* 版本 3：从「一个 store 存整个 SQLite 快照」改成 users / records / meta 三个仓库。
+     v2 的 'db' store 不动，里面可能还有一份旧 SQLite 快照，启动时用它做一次性迁移。 */
+  const IDB_VERSION = 3;
+  const STORE_META = 'meta';
+  const STORE_USERS = 'users';
+  const STORE_RECORDS = 'records';
+  const LEGACY_STORE = 'db';            // v2 及以前：SQLite 快照的存放位置
+  const LEGACY_BYTES_KEY = 'bytes';
+  const META_INTRO_KEY = 'intro';
 
-  /* SQLite 不支持 MySQL 风格的内联 COMMENT，字段说明以 -- 注释保留，
-     会原样存进 sqlite_master，用 DB Browser / sqlite3 打开时能看到。 */
-  const SCHEMA_USER_SQL = `
-CREATE TABLE IF NOT EXISTS user_config (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id           TEXT NOT NULL UNIQUE,   -- 用户ID，80 开头 + yyyyMMddHHmm + 6 位随机
-    user_name         TEXT NOT NULL,          -- 用户姓名
-    effect_confirm    TEXT NOT NULL DEFAULT 'GAME' CHECK (effect_confirm IN ('GAME','COLOR')),  -- 确认效果：GAME 游戏 / COLOR 闪色
-    enhance_count     INTEGER NOT NULL DEFAULT 4,   -- 强化次数：答对几次算通过当前档
-    record_require    TEXT NOT NULL DEFAULT 'BEST' CHECK (record_require IN ('BEST','LAST')),   -- 记录时机：BEST 取最好 / LAST 取最后一次
-    chart_calibration INTEGER NOT NULL DEFAULT 100, -- 图表校准：实测校准条的毫米数，默认 100
-    max_display_count INTEGER NOT NULL DEFAULT 1,   -- 最多展示个数：0-8，0 表示一行能放几个就放几个
-    gmt_created       DATETIME DEFAULT CURRENT_TIMESTAMP,  -- 创建时间
-    gmt_modified      DATETIME DEFAULT CURRENT_TIMESTAMP,  -- 修改时间
-    remark            TEXT                                 -- 备注
-);
-`;
+  /* 导出文件格式标识：认出自家文件，别的 JSON 一律拒绝 */
+  const FORMAT = 'eyerecord';
+  const FORMAT_VERSION = 2;
 
-  /* 唯一约束是 UNIQUE(user_id, record_date) —— 多用户下同一天各存一条。
-     旧版本的 UNIQUE(record_date) 会让两个用户无法在同一天记录，必须重建表。 */
-  const SCHEMA_RECORD_SQL = `
-CREATE TABLE IF NOT EXISTS vision_train_record (
-    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id        TEXT NOT NULL,          -- 关联用户ID
-    record_date    TEXT NOT NULL,          -- 记录日期 YYYY-MM-DD
-    pre_left       REAL,                   -- 训前左眼视力
-    pre_right      REAL,                   -- 训前右眼视力
-    pre_both       REAL,                   -- 训前双眼视力
-    train_left     REAL,                   -- 强化训练左眼视力
-    train_right    REAL,                   -- 强化训练右眼视力
-    train_both     REAL,                   -- 强化训练双眼视力
-    second_left    REAL,                   -- 秒视左眼视力
-    second_right   REAL,                   -- 秒视右眼视力
-    second_both    REAL,                   -- 秒视双眼视力
-    test_distance  INTEGER,                -- 测视距离，单位 cm
-    train_distance INTEGER,                -- 强化训练距离，单位 cm
-    remark         TEXT,                   -- 备注：训练时长、孩子配合情况、特殊说明
-    gmt_created    DATETIME DEFAULT CURRENT_TIMESTAMP,  -- 创建时间
-    gmt_modified   DATETIME DEFAULT CURRENT_TIMESTAMP,  -- 修改时间
-    UNIQUE(user_id, record_date)
-);
-`;
-
-  const TRIGGER_USER_SQL = `
-CREATE TRIGGER IF NOT EXISTS update_user_config_modtime
-AFTER UPDATE ON user_config
-FOR EACH ROW
-BEGIN
-    UPDATE user_config SET gmt_modified = CURRENT_TIMESTAMP WHERE id = OLD.id;
-END;
-`;
-
-  const TRIGGER_SQL = `
-CREATE TRIGGER IF NOT EXISTS update_vision_train_modtime
-AFTER UPDATE ON vision_train_record
-FOR EACH ROW
-BEGIN
-    UPDATE vision_train_record SET gmt_modified = CURRENT_TIMESTAMP WHERE id = OLD.id;
-END;
-`;
-
-  /* 升级旧库时要补上的列：旧表没有用户和秒视字段。
-     ADD COLUMN 只能加可空列（带 NOT NULL 必须给默认值），
-     所以 user_id 这里先建成可空，随后重建表时才收紧为 NOT NULL。 */
-  const ADDED_COLUMNS = [
-    { name: 'user_id', ddl: 'TEXT' },
-    { name: 'second_left', ddl: 'REAL' },
-    { name: 'second_right', ddl: 'REAL' },
-    { name: 'second_both', ddl: 'REAL' }
+  const USER_FIELDS = [
+    'id', 'user_id', 'user_name', 'effect_confirm', 'enhance_count',
+    'record_require', 'chart_calibration', 'max_display_count',
+    'gmt_created', 'gmt_modified', 'remark'
   ];
+  const RECORD_FIELDS = [
+    'id', 'user_id', 'record_date',
+    'pre_left', 'pre_right', 'pre_both',
+    'train_left', 'train_right', 'train_both',
+    'second_left', 'second_right', 'second_both',
+    'test_distance', 'train_distance', 'remark',
+    'gmt_created', 'gmt_modified'
+  ];
+
+  /* recordVision 的字段名由外部传入，必须白名单校验 */
+  const VISION_FIELDS = [
+    'pre_left', 'pre_right', 'pre_both',
+    'train_left', 'train_right', 'train_both',
+    'second_left', 'second_right', 'second_both'
+  ];
+
+  /* 配置里允许外部按 key 更新的项，同样是白名单 */
+  const CONFIG_FIELDS = [
+    'effect_confirm', 'enhance_count', 'record_require',
+    'chart_calibration', 'max_display_count'
+  ];
+
+  const CONFIG_LIMITS = {
+    effect_confirm: ['GAME', 'COLOR'],
+    record_require: ['BEST', 'LAST'],
+    enhance_count: [0, 20],
+    chart_calibration: [20, 500],
+    max_display_count: [0, 8]
+  };
 
   /* 训练自动建行时带上的默认测量距离（手动记录页的默认值与之保持一致） */
   const DEFAULT_TEST_DISTANCE_CM = 500;    // 测视距离 5 米
@@ -109,346 +87,799 @@ END;
   const LEGACY_USER_ID = '80legacy000001';
   const LEGACY_USER_NAME = '历史记录（未归属）';
 
-  /* recordVision 的字段名由外部传入并拼进 SQL，必须白名单校验 */
-  const VISION_FIELDS = [
-    'pre_left', 'pre_right', 'pre_both',
-    'train_left', 'train_right', 'train_both',
-    'second_left', 'second_right', 'second_both'
-  ];
-
-  /* 用户配置里允许外部按 key 更新的列，同样是白名单 */
-  const CONFIG_FIELDS = [
-    'effect_confirm', 'enhance_count', 'record_require',
-    'chart_calibration', 'max_display_count'
-  ];
-
   const state = {
-    SQL: null,
-    db: null,
-    mode: null,        // 'idb' | 'manual'
-    fileName: DB_FILE_NAME,
+    mode: null,          // 'idb' | 'manual'
+    users: [],           // 用户对象数组（内存副本）
+    records: [],         // 记录对象数组（内存副本）
+    nextUserId: 1,
+    nextRecordId: 1,
     pendingExport: false,
+    writeChain: Promise.resolve()
   };
 
-  /* ---------------- 底层工具 ---------------- */
+  /* ---------------- 通用小工具 ---------------- */
 
-  function decodeWasm() {
-    const b64 = global.SQL_WASM_BASE64;
-    if (!b64) throw new Error('缺少 vendor/sql-wasm-binary.js');
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return bytes;
+  function pad(n, w) { return String(n).padStart(w, '0'); }
+
+  /** 与 SQLite 的 CURRENT_TIMESTAMP 保持同一种字符串（UTC），显示层不用改 */
+  function nowUtc() {
+    const d = new Date();
+    return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1, 2) + '-' + pad(d.getUTCDate(), 2) +
+      ' ' + pad(d.getUTCHours(), 2) + ':' + pad(d.getUTCMinutes(), 2) + ':' + pad(d.getUTCSeconds(), 2);
   }
 
-  function loadRuntime() {
-    if (state.SQL) return Promise.resolve(state.SQL);
-    if (!global.initSqlJs) return Promise.reject(new Error('缺少 vendor/sql-wasm.js'));
-    return global.initSqlJs({ wasmBinary: decodeWasm() }).then((SQL) => {
-      state.SQL = SQL;
-      return SQL;
+  function numOrNull(v) {
+    if (v === null || v === undefined || v === '') return null;
+    const n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  function intOrNull(v) {
+    const n = numOrNull(v);
+    return n === null ? null : Math.round(n);
+  }
+
+  function strOrNull(v) {
+    if (v === null || v === undefined) return null;
+    const s = String(v);
+    return s === '' ? null : s;
+  }
+
+  function clampInt(v, lo, hi, dflt) {
+    const n = parseInt(v, 10);
+    if (isNaN(n)) return dflt;
+    return Math.min(hi, Math.max(lo, n));
+  }
+
+  function pickEnum(v, allowed, dflt) {
+    return allowed.indexOf(v) >= 0 ? v : dflt;
+  }
+
+  function normalizeTimestamp(v) {
+    if (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(v)) {
+      return v.replace('T', ' ').slice(0, 19);
+    }
+    return nowUtc();
+  }
+
+  function cloneUser(u) { return Object.assign({}, u); }
+  function cloneRecord(r) { return Object.assign({}, r); }
+
+  function toU8(bytes) {
+    if (bytes instanceof Uint8Array) return bytes;
+    if (bytes instanceof ArrayBuffer) return new Uint8Array(bytes);
+    if (ArrayBuffer.isView(bytes)) {
+      return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
+    throw new Error('无法识别的二进制数据');
+  }
+
+  function concatBytes(parts, total) {
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (let i = 0; i < parts.length; i++) {
+      out.set(parts[i], off);
+      off += parts[i].length;
+    }
+    return out;
+  }
+
+  /* ---------------- 用户 / 记录的规范化 ---------------- */
+
+  /** 把外来数据补成一条完整合法的用户配置；id 只用于排序，由采纳顺序决定 */
+  function normalizeUser(raw, id) {
+    const src = raw || {};
+    return {
+      id: id,
+      user_id: String(src.user_id || ''),
+      user_name: String(src.user_name == null || src.user_name === '' ? '未命名' : src.user_name),
+      effect_confirm: pickEnum(src.effect_confirm, CONFIG_LIMITS.effect_confirm, 'GAME'),
+      enhance_count: clampInt(src.enhance_count, 0, 20, 4),
+      record_require: pickEnum(src.record_require, CONFIG_LIMITS.record_require, 'BEST'),
+      chart_calibration: clampInt(src.chart_calibration, 20, 500, 100),
+      max_display_count: clampInt(src.max_display_count, 0, 8, 1),
+      gmt_created: normalizeTimestamp(src.gmt_created),
+      gmt_modified: normalizeTimestamp(src.gmt_modified),
+      remark: strOrNull(src.remark)
+    };
+  }
+
+  function normalizeRecord(raw, id) {
+    const src = raw || {};
+    return {
+      id: id,
+      user_id: String(src.user_id || ''),
+      record_date: String(src.record_date || ''),
+      pre_left: numOrNull(src.pre_left),
+      pre_right: numOrNull(src.pre_right),
+      pre_both: numOrNull(src.pre_both),
+      train_left: numOrNull(src.train_left),
+      train_right: numOrNull(src.train_right),
+      train_both: numOrNull(src.train_both),
+      second_left: numOrNull(src.second_left),
+      second_right: numOrNull(src.second_right),
+      second_both: numOrNull(src.second_both),
+      test_distance: intOrNull(src.test_distance),
+      train_distance: intOrNull(src.train_distance),
+      remark: strOrNull(src.remark),
+      gmt_created: normalizeTimestamp(src.gmt_created),
+      gmt_modified: normalizeTimestamp(src.gmt_modified)
+    };
+  }
+
+  /** 只取记录里允许写入的 12 个字段，undefined 统一成 null */
+  function pickRecordFields(rec) {
+    const out = {};
+    ['pre_left', 'pre_right', 'pre_both',
+      'train_left', 'train_right', 'train_both',
+      'second_left', 'second_right', 'second_both'].forEach((k) => { out[k] = numOrNull(rec[k]); });
+    out.test_distance = intOrNull(rec.test_distance);
+    out.train_distance = intOrNull(rec.train_distance);
+    out.remark = strOrNull(rec.remark);
+    return out;
+  }
+
+  /** 用一批用户 / 记录替换内存副本，并重排自增 id（顺带去重，保证仓库主键唯一） */
+  function adopt(users, records) {
+    const known = {};
+    const cleanUsers = [];
+    (users || []).forEach((u) => {
+      if (!u || !u.user_id) return;
+      const key = String(u.user_id);
+      if (known[key]) return;
+      known[key] = true;
+      cleanUsers.push(normalizeUser(u, cleanUsers.length + 1));
     });
+
+    const seen = {};
+    const cleanRecords = [];
+    (records || []).forEach((r) => {
+      if (!r || !r.user_id || !r.record_date) return;
+      const key = String(r.user_id) + '\u0000' + String(r.record_date);
+      if (seen[key]) return;             // (user_id, record_date) 唯一：重复的只留第一条
+      seen[key] = true;
+      cleanRecords.push(normalizeRecord(r, cleanRecords.length + 1));
+    });
+
+    // 记录挂在一个不存在的用户上（比如只导入了 records）时，补一个占位用户，别让数据变孤儿
+    let needLegacy = false;
+    cleanRecords.forEach((r) => { if (!known[r.user_id]) needLegacy = true; });
+    if (needLegacy && !known[LEGACY_USER_ID]) {
+      cleanUsers.push(normalizeUser({
+        user_id: LEGACY_USER_ID,
+        user_name: LEGACY_USER_NAME,
+        remark: '升级多用户版本之前已有的旧记录'
+      }, cleanUsers.length + 1));
+      known[LEGACY_USER_ID] = true;
+    }
+
+    state.users = cleanUsers;
+    state.records = cleanRecords;
+    state.nextUserId = cleanUsers.length + 1;
+    state.nextRecordId = cleanRecords.length + 1;
   }
 
-  function queryAll(sql, params) {
-    const stmt = state.db.prepare(sql);
-    if (params) stmt.bind(params);
-    const rows = [];
-    while (stmt.step()) rows.push(stmt.getAsObject());
-    stmt.free();
-    return rows;
-  }
+  /* ---------------- IndexedDB ---------------- */
 
-  function queryOne(sql, params) {
-    return queryAll(sql, params)[0] || null;
-  }
-
-  /* ---------------- IndexedDB：唯一的自动保存位置 ---------------- */
+  let idbPromise = null;
 
   function idbOpen() {
-    return new Promise((resolve, reject) => {
+    if (idbPromise) return idbPromise;
+    idbPromise = new Promise((resolve, reject) => {
       if (!global.indexedDB) return reject(new Error('no indexedDB'));
       let req;
-      try { req = indexedDB.open(IDB_NAME, IDB_VERSION); } catch (e) { return reject(e); }
+      try { req = global.indexedDB.open(IDB_NAME, IDB_VERSION); } catch (e) { return reject(e); }
       req.onupgradeneeded = () => {
         const db = req.result;
-        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+        if (!db.objectStoreNames.contains(STORE_META)) db.createObjectStore(STORE_META);
+        if (!db.objectStoreNames.contains(STORE_USERS)) db.createObjectStore(STORE_USERS, { keyPath: 'user_id' });
+        if (!db.objectStoreNames.contains(STORE_RECORDS)) db.createObjectStore(STORE_RECORDS, { keyPath: 'id' });
+        // 旧版的 'db' store（SQLite 快照）故意留着，启动时用它做一次性迁移
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => reject(req.error || new Error('idb open failed'));
       // 别的标签页占着旧版本时会卡在这里，不能干等，直接让上层降级
       req.onblocked = () => reject(new Error('idb blocked'));
-    });
+    }).catch((e) => { idbPromise = null; throw e; });
+    return idbPromise;
   }
 
-  /** 读出上次的整个数据库字节快照 */
-  function idbGetBytes() {
+  function idbStoreExists(name) {
+    return idbOpen().then((db) => db.objectStoreNames.contains(name));
+  }
+
+  function idbGetAll(storeName) {
     return idbOpen().then((db) => new Promise((resolve, reject) => {
-      let req;
-      try { req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(IDB_BYTES_KEY); }
-      catch (e) { return reject(e); }
-      req.onsuccess = () => resolve(req.result || null);
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).getAll();
+      req.onsuccess = () => resolve(req.result || []);
       req.onerror = () => reject(req.error);
-    })).catch(() => null);
+    }));
   }
 
-  /** 把整个数据库字节写回 IndexedDB，等价于「自动保存」 */
-  function idbSetBytes(bytes) {
+  function idbGet(storeName, key) {
     return idbOpen().then((db) => new Promise((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readwrite');
-      tx.objectStore(IDB_STORE).put(bytes, IDB_BYTES_KEY);
+      const tx = db.transaction(storeName, 'readonly');
+      const req = tx.objectStore(storeName).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    }));
+  }
+
+  function idbPut(storeName, value) {
+    return idbOpen().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).put(value);
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('idb abort'));
+    }));
+  }
+
+  /** meta 这类没有 keyPath 的仓库：put(值, 键) */
+  function idbPutKey(storeName, value, key) {
+    return idbOpen().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).put(value, key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('idb abort'));
+    }));
+  }
+
+  function idbDelete(storeName, key) {
+    return idbOpen().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction(storeName, 'readwrite');
+      tx.objectStore(storeName).delete(key);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('idb abort'));
+    }));
+  }
+
+  /** 用内存副本整体覆盖两个仓库：一个事务里完成，不会出现只写了一半的中间态 */
+  function idbReplaceAll(users, records) {
+    return idbOpen().then((db) => new Promise((resolve, reject) => {
+      const tx = db.transaction([STORE_USERS, STORE_RECORDS], 'readwrite');
+      const us = tx.objectStore(STORE_USERS);
+      const rs = tx.objectStore(STORE_RECORDS);
+      us.clear();
+      rs.clear();
+      users.forEach((u) => us.put(u));
+      records.forEach((r) => rs.put(r));
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('idb abort'));
     }));
   }
 
   /**
-   * 读写与快照无关的小标记（目前只有「首次说明页看过没」）。
-   * 刻意和快照分开存：导入备份只覆盖 bytes，标记不受影响。
+   * 写入排队 + 结果归一：永远 resolve 成「有没有落盘成功」。
+   * 写失败只把 pendingExport 亮起来（上层会提示用户导出备份），不抛错，
+   * 这样即使存储出问题，界面也不会卡死。
    */
-  function idbGetFlag(key) {
-    return idbOpen().then((db) => new Promise((resolve, reject) => {
-      const req = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
-      req.onsuccess = () => resolve(req.result);
-      req.onerror = () => reject(req.error);
-    })).catch(() => null);
-  }
-
-  function idbSetFlag(key, val) {
-    return idbOpen().then((db) => new Promise((resolve, reject) => {
-      const tx = db.transaction(IDB_STORE, 'readwrite');
-      tx.objectStore(IDB_STORE).put(val, key);
-      tx.oncomplete = () => resolve(true);
-      tx.onerror = () => reject(tx.error);
-    })).catch(() => false);
-  }
-
-  /** IDB 迟迟不返回时不能把整个启动流程卡死（否则页面会停在没有数据也没有提示的空状态） */
-  function withTimeout(promise, ms, fallback) {
-    return new Promise((resolve) => {
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        resolve(fallback);
-      }, ms);
-      const done = (v) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        resolve(v);
-      };
-      promise.then(done).catch(() => done(fallback));
-    });
-  }
-
-  function doWrite() {
-    if (state.mode === 'idb') {
-      let bytes;
-      try {
-        bytes = state.db.export();     // 库已关闭/损坏时会抛
-      } catch (e) {
+  function persist(work) {
+    const run = () => {
+      if (state.mode !== 'idb') {
         state.pendingExport = true;
-        return Promise.resolve(false);
+        return false;
       }
-      return idbSetBytes(bytes)
+      return work()
         .then(() => { state.pendingExport = false; return true; })
         .catch(() => { state.pendingExport = true; return false; });
-    }
-    // 纯内存：无法自动落盘，等用户手动导出
-    state.pendingExport = true;
-    return Promise.resolve(false);
-  }
-
-  /**
-   * 把内存里的数据库整体覆盖写回 eyerecord。
-   * 写入排成一条队（避免两次写入抢同一个文件），失败只做标记不抛错，
-   * 这样即使磁盘写入出问题，界面也不会卡死。
-   */
-  function writeToDisk() {
-    state.writeChain = (state.writeChain || Promise.resolve()).then(doWrite);
+    };
+    state.writeChain = state.writeChain.then(run, run);
     return state.writeChain;
   }
 
-  function tableExists(name) {
-    return !!queryOne("SELECT name FROM sqlite_master WHERE type='table' AND name=?", [name]);
+  function persistAll() {
+    return persist(() => idbReplaceAll(state.users, state.records));
   }
 
-  function columnNames(table) {
-    return queryAll('PRAGMA table_info(' + table + ')').map((r) => r.name);
+  function persistUser(user) {
+    return persist(() => idbPut(STORE_USERS, user));
   }
 
-  /** 每张唯一索引覆盖的列名集合，用来判断旧表是不是只按日期唯一 */
-  function uniqueIndexColumns(table) {
-    return queryAll('PRAGMA index_list(' + table + ')')
-      .filter((idx) => idx.unique === 1)
-      .map((idx) => queryAll('PRAGMA index_info(' + idx.name + ')')
-        .map((c) => c.name).sort().join(','));
+  function persistRecord(rec) {
+    return persist(() => idbPut(STORE_RECORDS, rec));
   }
 
-  /** 缺哪个列就补哪个，返回是否有过改动 */
-  function addMissingColumns() {
-    const have = columnNames('vision_train_record');
-    let changed = false;
-    ADDED_COLUMNS.forEach((c) => {
-      if (have.indexOf(c.name) < 0) {
-        state.db.run('ALTER TABLE vision_train_record ADD COLUMN ' + c.name + ' ' + c.ddl);
-        changed = true;
+  function persistRecordDelete(id) {
+    return persist(() => idbDelete(STORE_RECORDS, id));
+  }
+
+  /* ---------------- 旧版 SQLite 备份解析（只读，用于兼容导入） ----------------
+   *
+   * 旧版本的备份是 sql.js 导出的标准 SQLite 文件。这里实现一个够用的只读解析器：
+   * 顺着表 B 树读出每一行，按 CREATE TABLE 里的列名映射成对象。
+   * 只解析表页（0x05 / 0x0D），支持溢出页、UTF-8 / UTF-16 文本。
+   * ------------------------------------------------------------------------- */
+
+  const decoderCache = {};
+
+  function decodeSqliteText(bytes, encoding) {
+    let enc = 'utf-8';
+    if (encoding === 2) enc = 'utf-16le';
+    else if (encoding === 3) enc = 'utf-16be';
+    try {
+      if (!decoderCache[enc]) decoderCache[enc] = new global.TextDecoder(enc);
+      return decoderCache[enc].decode(bytes);
+    } catch (e) {
+      return new global.TextDecoder('utf-8').decode(bytes);
+    }
+  }
+
+  function stripSqlComments(sql) {
+    return String(sql).replace(/--[^\n\r]*/g, ' ').replace(/\/\*[\s\S]*?\*\//g, ' ');
+  }
+
+  /** 按顶层分隔符切分，跳过括号和引号里的内容 */
+  function splitTopLevel(body, sep) {
+    const out = [];
+    let depth = 0;
+    let cur = '';
+    let quote = null;
+    for (let i = 0; i < body.length; i++) {
+      const ch = body[i];
+      if (quote) {
+        cur += ch;
+        if (ch === quote) quote = null;
+        continue;
       }
+      if (ch === '"' || ch === "'" || ch === '`') { quote = ch; cur += ch; continue; }
+      if (ch === '[') { quote = ']'; cur += ch; continue; }
+      if (ch === '(') { depth++; cur += ch; continue; }
+      if (ch === ')') { depth--; cur += ch; continue; }
+      if (ch === sep && depth === 0) { out.push(cur); cur = ''; continue; }
+      cur += ch;
+    }
+    out.push(cur);
+    return out;
+  }
+
+  /** 从 CREATE TABLE 语句里解析列名 / 类型 / 是否主键 */
+  function parseColumns(createSql) {
+    const sql = stripSqlComments(createSql);
+    const open = sql.indexOf('(');
+    const close = sql.lastIndexOf(')');
+    if (open < 0 || close <= open) return [];
+    const parts = splitTopLevel(sql.slice(open + 1, close), ',');
+    const cols = [];
+    parts.forEach((part) => {
+      const t = part.trim();
+      if (!t) return;
+      if (/^(PRIMARY|UNIQUE|CHECK|FOREIGN|CONSTRAINT)\b/i.test(t)) return;
+      const m = /^(?:"([^"]+)"|\[([^\]]+)\]|`([^`]+)`|'([^']+)'|([A-Za-z_][A-Za-z0-9_$]*))/.exec(t);
+      if (!m) return;
+      const name = m[1] || m[2] || m[3] || m[4] || m[5];
+      const rest = t.slice(m[0].length);
+      const typeMatch = /^\s+([A-Za-z]+)/.exec(rest);
+      cols.push({
+        name: name,
+        type: typeMatch ? typeMatch[1].toUpperCase() : '',
+        pk: /\bPRIMARY\s+KEY\b/i.test(rest)
+      });
     });
-    return changed;
+    return cols;
+  }
+
+  function sqliteSerial(t) {
+    if (t === 0) return { kind: 'null', size: 0 };
+    if (t >= 1 && t <= 4) return { kind: 'int', size: t };
+    if (t === 5) return { kind: 'int', size: 6 };
+    if (t === 6) return { kind: 'int', size: 8 };
+    if (t === 7) return { kind: 'float', size: 8 };
+    if (t === 8) return { kind: 'int0', size: 0 };
+    if (t === 9) return { kind: 'int1', size: 0 };
+    if (t === 10 || t === 11) return { kind: 'null', size: 0 };
+    if (t % 2 === 0) return { kind: 'blob', size: (t - 12) / 2 };
+    return { kind: 'text', size: (t - 13) / 2 };
+  }
+
+  function readSigned(buf, off, n) {
+    if (n === 8) {
+      const dv = new DataView(buf.buffer, buf.byteOffset + off, 8);
+      return Number(dv.getBigInt64(0, false));
+    }
+    let v = 0;
+    for (let i = 0; i < n; i++) v = v * 256 + buf[off + i];
+    if (v >= Math.pow(2, n * 8 - 1)) v -= Math.pow(2, n * 8);
+    return v;
+  }
+
+  function readSqliteValue(buf, off, serial, encoding) {
+    switch (serial.kind) {
+      case 'null': return null;
+      case 'int': return readSigned(buf, off, serial.size);
+      case 'int0': return 0;
+      case 'int1': return 1;
+      case 'float': return new DataView(buf.buffer, buf.byteOffset + off, 8).getFloat64(0, false);
+      case 'text': return decodeSqliteText(buf.subarray(off, off + serial.size), encoding);
+      case 'blob': return buf.subarray(off, off + serial.size);
+      default: return null;
+    }
   }
 
   /**
-   * 旧表的唯一约束是 UNIQUE(record_date)，多用户下第二个人在同一天根本插不进去。
-   * CREATE TABLE IF NOT EXISTS 不会改动既有索引，只能整表重建：
-   *   建新表 -> 拷数据 -> 删旧表 -> 改名 -> 重建触发器
+   * 解析一个 SQLite 数据库文件（ArrayBuffer / Uint8Array）。
+   * 返回 { tables: { 表名: { columns, rows } } }，rows 里的每一项是「列名 → 值」的对象。
    */
-  function rebuildRecordTable() {
-    const orphans = queryOne(
-      'SELECT COUNT(*) AS n FROM vision_train_record WHERE user_id IS NULL'
-    ).n;
-
-    // 新表 user_id 是 NOT NULL，无主行必须先挂到一个用户上，否则拷贝会失败
-    if (orphans > 0) {
-      const legacy = queryOne('SELECT id FROM user_config WHERE user_id = ?', [LEGACY_USER_ID]);
-      if (!legacy) {
-        state.db.run(
-          'INSERT INTO user_config (user_id, user_name, remark) VALUES (?, ?, ?)',
-          [LEGACY_USER_ID, LEGACY_USER_NAME, '升级多用户版本之前已有的旧记录']
-        );
-      }
-      state.db.run(
-        'UPDATE vision_train_record SET user_id = ? WHERE user_id IS NULL',
-        [LEGACY_USER_ID]
-      );
+  function parseSqliteDatabase(input) {
+    const u8 = toU8(input);
+    if (u8.length < 100) throw new Error('文件太小，不是 SQLite 数据库');
+    const magic = 'SQLite format 3\u0000';
+    for (let i = 0; i < 16; i++) {
+      if (u8[i] !== magic.charCodeAt(i)) throw new Error('不是 SQLite 数据库文件');
     }
 
-    state.db.run('BEGIN');
-    state.db.run(SCHEMA_RECORD_SQL.replace('vision_train_record', 'vision_train_record__new'));
-    state.db.run(
-      'INSERT INTO vision_train_record__new ' +
-      '(id, user_id, record_date, pre_left, pre_right, pre_both, ' +
-      ' train_left, train_right, train_both, ' +
-      ' second_left, second_right, second_both, ' +
-      ' test_distance, train_distance, remark, gmt_created, gmt_modified) ' +
-      'SELECT id, user_id, record_date, pre_left, pre_right, pre_both, ' +
-      ' train_left, train_right, train_both, ' +
-      ' second_left, second_right, second_both, ' +
-      ' test_distance, train_distance, remark, gmt_created, gmt_modified ' +
-      'FROM vision_train_record'
-    );
-    state.db.run('DROP TABLE vision_train_record');   // 会连带删掉挂在它上面的触发器
-    state.db.run('ALTER TABLE vision_train_record__new RENAME TO vision_train_record');
-    state.db.run(TRIGGER_SQL);
-    state.db.run('COMMIT');
+    const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+    let pageSize = dv.getUint16(16, false);
+    if (pageSize === 1) pageSize = 65536;
+    if (pageSize < 512 || (pageSize & (pageSize - 1)) !== 0) {
+      throw new Error('SQLite 页大小异常：' + pageSize);
+    }
+    const reserved = u8[20];
+    const usable = pageSize - reserved;
+    if (usable < 480) throw new Error('SQLite 可用页大小异常');
+    const encoding = dv.getUint32(56, false) || 1;
+    const totalPages = Math.max(1, Math.floor(u8.length / pageSize));
+
+    function pageOffset(no) {
+      if (no < 1 || no > totalPages) throw new Error('SQLite 页号越界：' + no);
+      return (no - 1) * pageSize;
+    }
+
+    function readVarint(buf, off, end) {
+      let v = 0;
+      for (let i = 0; i < 8; i++) {
+        if (off + i >= end) throw new Error('记录越界（varint）');
+        const b = buf[off + i];
+        v = v * 128 + (b & 0x7f);
+        if (b < 0x80) return { value: v, size: i + 1 };
+      }
+      if (off + 8 >= end) throw new Error('记录越界（varint）');
+      v = v * 256 + buf[off + 8];
+      return { value: v, size: 9 };
+    }
+
+    /** 取出单元格载荷：超出本页的部分顺着溢出页链拼回来 */
+    function readPayload(off, len) {
+      const maxLocal = usable - 35;
+      if (len <= maxLocal) {
+        if (off + len > u8.length) throw new Error('记录越界（载荷）');
+        return u8.subarray(off, off + len);
+      }
+      const minLocal = Math.floor((usable - 12) * 32 / 255) - 23;
+      let local = minLocal + (len - minLocal) % (usable - 4);
+      if (local > maxLocal) local = minLocal;
+      const parts = [u8.subarray(off, off + local)];
+      let remaining = len - local;
+      let next = dv.getUint32(off + local, false);
+      let guard = 0;
+      while (next && remaining > 0) {
+        if (++guard > totalPages + 10) throw new Error('SQLite 溢出页链异常');
+        const po = pageOffset(next);
+        const follow = dv.getUint32(po, false);
+        const take = Math.min(remaining, usable - 4);
+        parts.push(u8.subarray(po + 4, po + 4 + take));
+        remaining -= take;
+        next = follow;
+      }
+      if (remaining > 0) throw new Error('SQLite 记录载荷不完整');
+      return concatBytes(parts, len);
+    }
+
+    function decodeRecord(payload) {
+      const head = readVarint(payload, 0, payload.length);
+      const headerSize = head.value;
+      const types = [];
+      let o = head.size;
+      while (o < headerSize) {
+        const t = readVarint(payload, o, payload.length);
+        types.push(t.value);
+        o += t.size;
+      }
+      let dataOff = headerSize;
+      return types.map((t) => {
+        const serial = sqliteSerial(t);
+        const v = readSqliteValue(payload, dataOff, serial, encoding);
+        dataOff += serial.size;
+        return v;
+      });
+    }
+
+    /** 中序遍历表 B 树，回调 (rowid, 值数组) */
+    function walkTable(rootPage, onRow) {
+      const seen = {};
+      (function walk(no) {
+        if (seen[no]) return;
+        seen[no] = true;
+        const base = pageOffset(no);
+        // 第 1 页开头是 100 字节的文件头，B 树页头从 100 之后才开始；
+        // 但单元格偏移量始终是相对页首的，所以 cell 用 base 换算。
+        const hdr = no === 1 ? base + 100 : base;
+        const type = u8[hdr];
+        const count = dv.getUint16(hdr + 3, false);
+        if (type === 0x0d) {                       // 叶表页
+          for (let i = 0; i < count; i++) {
+            const cell = base + dv.getUint16(hdr + 8 + i * 2, false);
+            const pl = readVarint(u8, cell, u8.length);
+            const rid = readVarint(u8, cell + pl.size, u8.length);
+            const payload = readPayload(cell + pl.size + rid.size, pl.value);
+            onRow(rid.value, decodeRecord(payload));
+          }
+          return;
+        }
+        if (type === 0x05) {                       // 内表页
+          for (let i = 0; i < count; i++) {
+            const cell = base + dv.getUint16(hdr + 12 + i * 2, false);
+            walk(dv.getUint32(cell, false));
+          }
+          walk(dv.getUint32(hdr + 8, false));
+          return;
+        }
+        throw new Error('不支持的 SQLite 页类型：' + type);
+      })(rootPage);
+    }
+
+    function rowToObject(columns, vals, rowid) {
+      const pkCols = columns.filter((c) => c.pk);
+      // INTEGER PRIMARY KEY 是 rowid 的别名，记录里存的是 NULL，实际值要用 rowid 补上
+      const rowidAlias = (pkCols.length === 1 && /INT/i.test(pkCols[0].type)) ? pkCols[0].name : null;
+      const obj = {};
+      columns.forEach((c, i) => {
+        let v = i < vals.length ? vals[i] : null;
+        if (c.name === rowidAlias && v === null) v = rowid;
+        obj[c.name] = v;
+      });
+      return obj;
+    }
+
+    const tables = {};
+    walkTable(1, (rowid, vals) => {                // 第 1 页是 sqlite_master
+      const type = vals[0];
+      const name = vals[1];
+      const rootpage = vals[3];
+      const sql = vals[4];
+      if (type !== 'table' || !name || !sql || typeof rootpage !== 'number') return;
+      const columns = parseColumns(sql);
+      if (!columns.length) return;
+      const rows = [];
+      walkTable(rootpage, (rid, rvals) => rows.push(rowToObject(columns, rvals, rid)));
+      tables[name] = { columns: columns, rows: rows };
+    });
+
+    return { pageSize: pageSize, encoding: encoding, tables: tables };
   }
 
-  /** 建表 + 升级旧库。返回 true 表示结构有变动，需要立刻落盘 */
-  function ensureSchema() {
-    let changed = false;
+  function isSqliteFile(bytes) {
+    const u8 = toU8(bytes);
+    if (u8.length < 16) return false;
+    const magic = 'SQLite format 3\u0000';
+    for (let i = 0; i < 16; i++) if (u8[i] !== magic.charCodeAt(i)) return false;
+    return true;
+  }
 
-    if (!tableExists('user_config')) {
-      state.db.run(SCHEMA_USER_SQL);
-      state.db.run(TRIGGER_USER_SQL);
-      changed = true;
+  function tableRows(parsed, name) {
+    return parsed && parsed.tables && parsed.tables[name] ? parsed.tables[name].rows : [];
+  }
+
+  /** 把旧库里的两张表转成新结构；缺列、孤儿记录都在这里兜住 */
+  function adoptFromSqlite(parsed) {
+    const users = tableRows(parsed, 'user_config')
+      .filter((u) => u && u.user_id)
+      .map((u) => ({
+        user_id: u.user_id,
+        user_name: u.user_name,
+        effect_confirm: u.effect_confirm,
+        enhance_count: u.enhance_count,
+        record_require: u.record_require,
+        chart_calibration: u.chart_calibration,
+        max_display_count: u.max_display_count,
+        gmt_created: u.gmt_created,
+        gmt_modified: u.gmt_modified,
+        remark: u.remark
+      }));
+
+    const records = tableRows(parsed, 'vision_train_record')
+      .filter((r) => r && r.record_date)
+      .map((r) => ({
+        user_id: r.user_id || LEGACY_USER_ID,
+        record_date: r.record_date,
+        pre_left: r.pre_left,
+        pre_right: r.pre_right,
+        pre_both: r.pre_both,
+        train_left: r.train_left,
+        train_right: r.train_right,
+        train_both: r.train_both,
+        // 旧版本没有秒视字段，读出来是 undefined，normalize 时会变成 null
+        second_left: r.second_left,
+        second_right: r.second_right,
+        second_both: r.second_both,
+        test_distance: r.test_distance,
+        train_distance: r.train_distance,
+        remark: r.remark,
+        gmt_created: r.gmt_created,
+        gmt_modified: r.gmt_modified
+      }));
+
+    // 老库里没有用户表 / 记录没有归属：统一挂到占位用户上
+    if (records.length && (users.length === 0 || records.some((r) => r.user_id === LEGACY_USER_ID))) {
+      if (!users.some((u) => u.user_id === LEGACY_USER_ID)) {
+        users.push({
+          user_id: LEGACY_USER_ID,
+          user_name: LEGACY_USER_NAME,
+          remark: '升级多用户版本之前已有的旧记录'
+        });
+      }
     }
 
-    if (!tableExists('vision_train_record')) {
-      state.db.run(SCHEMA_RECORD_SQL);
-      state.db.run(TRIGGER_SQL);
-      return true;
+    adopt(users, records);
+  }
+
+  /* ---------------- 启动流程 ---------------- */
+
+  function loadFromIdb() {
+    return Promise.all([idbGetAll(STORE_USERS), idbGetAll(STORE_RECORDS)])
+      .then((res) => {
+        const users = res[0];
+        const records = res[1];
+        if (users.length || records.length) {
+          adopt(users, records);
+          state.mode = 'idb';
+          return { status: 'ready', fromIdb: true };
+        }
+        return migrateLegacySnapshot();
+      });
+  }
+
+  /** 新仓库还是空的：看看 v2 时代留下的 SQLite 快照能不能迁过来 */
+  function migrateLegacySnapshot() {
+    return idbStoreExists(LEGACY_STORE).then((has) => {
+      if (!has) return null;
+      return idbGet(LEGACY_STORE, LEGACY_BYTES_KEY).then((bytes) => {
+        if (!bytes) return null;
+        state.mode = 'idb';
+        let parsed;
+        try {
+          parsed = parseSqliteDatabase(bytes);
+        } catch (e) {
+          // 旧快照读不出来：给个空库继续用，但不覆盖旧快照，保留恢复的可能
+          return { status: 'ready', legacyError: e && e.message ? e.message : String(e) };
+        }
+        adoptFromSqlite(parsed);
+        return persistAll().then(() => ({
+          status: 'ready',
+          migrated: true,
+          counts: { users: state.users.length, records: state.records.length }
+        }));
+      });
+    });
+  }
+
+  function emptyReady() {
+    state.mode = global.indexedDB ? 'idb' : 'manual';
+    adopt([], []);
+    if (state.mode !== 'idb') return { status: 'ready', created: true, degraded: true };
+    return persistAll().then(() => ({ status: 'ready', created: true }));
+  }
+
+  function manualReady() {
+    state.mode = 'manual';
+    adopt([], []);
+    return { status: 'ready', created: true, degraded: true };
+  }
+
+  /* ---------------- 导入 ---------------- */
+
+  function readFileBytes(file) {
+    if (file && typeof file.arrayBuffer === 'function') return file.arrayBuffer();
+    return new Promise((resolve, reject) => {
+      const reader = new global.FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error('文件读取失败'));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  function decodeUtf8(bytes) {
+    try {
+      return new global.TextDecoder('utf-8').decode(toU8(bytes));
+    } catch (e) {
+      return '';
     }
-
-    if (addMissingColumns()) changed = true;
-
-    // 只按日期唯一 = 旧结构，必须重建才能支持多用户
-    if (uniqueIndexColumns('vision_train_record').indexOf('record_date') >= 0) {
-      rebuildRecordTable();
-      changed = true;
-    }
-
-    return changed;
   }
 
   /* ---------------- 对外接口 ---------------- */
 
   const EyeDB = {
     /**
-     * 页面启动时调用。
-     *
-     * 只有两条路：IndexedDB 里有快照就读出来，没有就建一个空库并立刻存进去。
-     * 返回值永远是 status:'ready' —— 去掉「选目录」那套之后，已经没有任何
-     * 「需要用户先做点什么才能用」的状态了，卡在遮罩上只会让界面死掉。
+     * 页面启动时调用。只有两条路：
+     *   IndexedDB 里已有数据 → 读进内存；
+     *   IndexedDB 里是空的   → 建新库，或把 v2 的 SQLite 快照迁过来。
+     * 返回值永远是 status:'ready'，任何异常都降级成可用状态，不把界面卡死。
      *
      * 可能带上的标记：
-     *   created   这次新建了库（首次打开）
-     *   corrupt   快照读出来是坏的，已用空库顶上（不会自动写回，否则唯一副本没了）
-     *   degraded  浏览器没有 IndexedDB，只能存内存里，每次保存会自动下载备份
+     *   created      这次新建了库（首次打开）
+     *   migrated     从旧版 SQLite 快照迁移完成，counts 是条数
+     *   legacyError  旧快照存在但读不出来
+     *   degraded     浏览器没有 IndexedDB，只能存内存里，每次保存会自动下载备份
      */
     boot() {
-      return loadRuntime()
-        .then(() => {
-          if (!global.indexedDB) return null;   // 没有 IndexedDB，走空库 + 内存模式
-          return withTimeout(idbGetBytes(), 3000, null);
-        })
-        .then((bytes) => {
-          if (bytes) {
-            try {
-              state.db = new state.SQL.Database(new Uint8Array(bytes));
-            } catch (e) {
-              // 快照坏了：先用空库顶上，但绝不自动写回 —— 一写就把唯一的副本抹掉了
-              state.db = new state.SQL.Database();
-              ensureSchema();
-              state.mode = 'idb';
-              return { status: 'ready', corrupt: true };
-            }
-            ensureSchema();
-            state.mode = 'idb';
-            return { status: 'ready', fromIdb: true };
-          }
-          return this.loadEmpty().then(() => ({
-            status: 'ready', created: true, degraded: state.mode === 'manual'
-          }));
-        })
+      if (!global.indexedDB) return Promise.resolve(manualReady());
+      return idbOpen()
+        .then(() => loadFromIdb())
+        .then((res) => res || emptyReady())
         .catch((e) => {
-          // sql.js 本身没起来（缺文件 / WASM 解不开）：没法兜底，如实抛出去
-          if (!state.SQL) return Promise.reject(e);
-          // 其余（IDB 被禁用、open 被 blocked 等）：至少给个能用的空库，别白屏
-          state.db = new state.SQL.Database();
-          ensureSchema();
-          state.mode = global.indexedDB ? 'idb' : 'manual';
-          return { status: 'ready', degraded: true, error: e && e.message };
+          // IDB 被禁用 / open 被 blocked / 读写失败：降级到内存模式，页面照常能用
+          return Object.assign(manualReady(), { error: e && e.message ? e.message : String(e) });
         });
     },
 
-    /** 手动打开一个备份出来的 eyerecord 文件（之后照样自动存进 IndexedDB） */
-    loadFromFile(file) {
-      return loadRuntime()
-        .then(() => file.arrayBuffer())
-        .then((buf) => {
-          try {
-            state.db = new state.SQL.Database(new Uint8Array(buf));
-          } catch (e) {
-            throw new Error('这个文件不是有效的 SQLite 数据库');
-          }
-          ensureSchema();
-          state.mode = global.indexedDB ? 'idb' : 'manual';
-          state.fileName = file.name || DB_FILE_NAME;
-          return { status: 'ready', created: false };
-        })
-        .then((res) => writeToDisk().then(() => res));
+    /** 导入备份文件（新版 JSON 或旧版 SQLite 二进制都行），导入后立刻落盘 */
+    loadFromFile(file) { return EyeDB.importFile(file); },
+
+    importFile(file) {
+      return readFileBytes(file).then((bytes) => EyeDB.importBytes(bytes, file && file.name));
+    },
+
+    importBytes(bytes, fileName) {
+      if (!bytes) return Promise.reject(new Error('文件是空的'));
+      // 先看魔数：旧版 SQLite 备份
+      if (isSqliteFile(bytes)) return EyeDB.importLegacyBytes(bytes, fileName);
+
+      const text = decodeUtf8(bytes).replace(/^\uFEFF/, '').trim();
+      if (!text) return Promise.reject(new Error('文件是空的'));
+      if (text.charAt(0) !== '{') {
+        return Promise.reject(new Error('这个文件既不是 JSON 备份，也不是旧版的 SQLite 备份'));
+      }
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        return Promise.reject(new Error('JSON 解析失败：' + (e && e.message ? e.message : e)));
+      }
+      return EyeDB.importData(data, fileName);
+    },
+
+    importData(data, fileName) {
+      if (!data || typeof data !== 'object') {
+        return Promise.reject(new Error('备份文件格式不正确'));
+      }
+      const users = Array.isArray(data.users) ? data.users : [];
+      const records = Array.isArray(data.records) ? data.records : [];
+      if (!users.length && !records.length) {
+        return Promise.reject(new Error('备份文件里没有可导入的用户或记录'));
+      }
+      if (data.format && data.format !== FORMAT) {
+        return Promise.reject(new Error('这不是本项目的备份文件'));
+      }
+
+      adopt(users, records);
+      state.mode = global.indexedDB ? 'idb' : 'manual';
+      if (state.mode !== 'idb') return Promise.resolve(importResult(false, fileName));
+      return persistAll().then((written) => importResult(written, fileName));
+    },
+
+    importLegacyBytes(bytes, fileName) {
+      let parsed;
+      try {
+        parsed = parseSqliteDatabase(bytes);
+      } catch (e) {
+        return Promise.reject(new Error('无法解析旧版 SQLite 备份：' + (e && e.message ? e.message : e)));
+      }
+      adoptFromSqlite(parsed);
+      if (!state.records.length && !state.users.length) {
+        return Promise.reject(new Error('这个 SQLite 备份里没有视力记录'));
+      }
+      state.mode = global.indexedDB ? 'idb' : 'manual';
+      if (state.mode !== 'idb') return Promise.resolve(importResult(false, fileName, true));
+      return persistAll().then((written) => importResult(written, fileName, true));
     },
 
     /** 建一个空库并立刻存进 IndexedDB（首次打开时用） */
     loadEmpty() {
-      return loadRuntime().then(() => {
-        state.db = new state.SQL.Database();
-        ensureSchema();
-        state.mode = global.indexedDB ? 'idb' : 'manual';
-        state.fileName = DB_FILE_NAME;
-      }).then(() => writeToDisk())
-        .then(() => ({ status: 'ready', created: true }));
+      return Promise.resolve(emptyReady());
     },
 
     getMode() { return state.mode; },
@@ -456,7 +887,7 @@ END;
     hasPendingExport() { return state.pendingExport; },
     dbFileLabel() {
       if (state.mode === 'idb') return '浏览器本地存储';
-      return state.fileName + '（内存中）';
+      return '内存中（浏览器不能保存）';
     },
 
     /** 首次说明页看过没。存 IndexedDB 而非 localStorage：file:// 下 localStorage
@@ -464,185 +895,198 @@ END;
         出现的场景下失效；IndexedDB 按目录分区，正好对得上。 */
     introShown() {
       if (state.mode !== 'idb') return Promise.resolve(false);   // 内存模式每次都提示
-      return idbGetFlag(IDB_INTRO_KEY).then((v) => !!v);
+      return idbGet(STORE_META, META_INTRO_KEY)
+        .catch(() => null)
+        .then((v) => {
+          if (v) return true;
+          // 兼容 v2：标记当时和 SQLite 快照存在同一个 store 里
+          return idbStoreExists(LEGACY_STORE)
+            .then((has) => (has ? idbGet(LEGACY_STORE, META_INTRO_KEY) : null))
+            .catch(() => null)
+            .then((old) => !!old);
+        });
     },
 
     markIntroShown() {
       if (state.mode !== 'idb') return Promise.resolve(false);
-      return idbSetFlag(IDB_INTRO_KEY, 1);
+      return idbPutKey(STORE_META, 1, META_INTRO_KEY).catch(() => false);
     },
 
     /* ---------------- 用户 ---------------- */
 
     /** 全部用户，按创建顺序 */
     listUsers() {
-      return queryAll('SELECT * FROM user_config ORDER BY id');
+      return state.users.slice().sort((a, b) => a.id - b.id).map(cloneUser);
     },
 
     /** 系统生成用户ID：80 + yyyyMMddHHmm(12位) + 6位随机 */
     newUserId() {
-      const p = (n, w) => String(n).padStart(w, '0');
       const d = new Date();
-      const stamp = String(d.getFullYear()) + p(d.getMonth() + 1, 2) + p(d.getDate(), 2) +
-        p(d.getHours(), 2) + p(d.getMinutes(), 2);
-      const rand = p(Math.floor(Math.random() * 1000000), 6);
+      const stamp = String(d.getFullYear()) + pad(d.getMonth() + 1, 2) + pad(d.getDate(), 2) +
+        pad(d.getHours(), 2) + pad(d.getMinutes(), 2);
+      const rand = pad(Math.floor(Math.random() * 1000000), 6);
       return '80' + stamp + rand;
     },
 
     getUserByName(name) {
-      return queryOne('SELECT * FROM user_config WHERE user_name = ?', [name]);
+      const u = state.users.find((x) => x.user_name === name);
+      return u ? cloneUser(u) : null;
     },
 
     getUser(userId) {
-      return queryOne('SELECT * FROM user_config WHERE user_id = ?', [userId]);
+      const u = state.users.find((x) => x.user_id === userId);
+      return u ? cloneUser(u) : null;
     },
 
-    /** 按姓名取用户，没有就用默认配置新建（配置默认值全部交给建表语句） */
+    /** 按姓名取用户，没有就用默认配置新建 */
     upsertUserByName(name) {
       const trimmed = String(name || '').trim();
       if (!trimmed) return Promise.reject(new Error('请填写姓名'));
-      const found = this.getUserByName(trimmed);
-      if (found) return Promise.resolve(found);
-      const userId = this.newUserId();
-      state.db.run(
-        'INSERT INTO user_config (user_id, user_name) VALUES (?, ?)',
-        [userId, trimmed]
-      );
-      writeToDisk();
-      return Promise.resolve(this.getUser(userId));
+      const found = state.users.find((x) => x.user_name === trimmed);
+      if (found) return Promise.resolve(cloneUser(found));
+
+      const now = nowUtc();
+      const user = normalizeUser({
+        user_id: this.newUserId(),
+        user_name: trimmed,
+        gmt_created: now,
+        gmt_modified: now
+      }, state.nextUserId++);
+      state.users.push(user);
+      return persistUser(user).then(() => cloneUser(user));
     },
 
-    /** 实时保存某一项配置，随后防抖落盘 */
+    /** 实时保存某一项配置，随后异步落盘 */
     updateConfig(userId, key, value) {
       if (!userId) return Promise.resolve(false);
       if (CONFIG_FIELDS.indexOf(key) < 0) throw new Error('不允许修改的配置项：' + key);
-      state.db.run(
-        'UPDATE user_config SET ' + key + ' = ? WHERE user_id = ?',
-        [value, userId]
-      );
-      return writeToDisk();
+      const user = state.users.find((x) => x.user_id === userId);
+      if (!user) return Promise.resolve(false);
+
+      if (key === 'effect_confirm' || key === 'record_require') {
+        user[key] = pickEnum(value, CONFIG_LIMITS[key], key === 'effect_confirm' ? 'GAME' : 'BEST');
+      } else {
+        user[key] = clampInt(value, CONFIG_LIMITS[key][0], CONFIG_LIMITS[key][1], user[key]);
+      }
+      user.gmt_modified = nowUtc();
+      return persistUser(user);
     },
 
     /* ---------------- 记录 ---------------- */
 
     /** 取某个用户某一天的记录 */
     getByDate(userId, date) {
-      return queryOne(
-        'SELECT * FROM vision_train_record WHERE user_id = ? AND record_date = ?',
-        [userId, date]
-      );
+      const r = state.records.find((x) => x.user_id === userId && x.record_date === date);
+      return r ? cloneRecord(r) : null;
     },
 
     /** 取某个用户时间范围内的记录，按日期倒序 */
     listRange(userId, from, to) {
-      return queryAll(
-        'SELECT * FROM vision_train_record ' +
-        'WHERE user_id = ? AND record_date BETWEEN ? AND ? ORDER BY record_date DESC',
-        [userId, from, to]
-      );
+      return state.records
+        .filter((r) => r.user_id === userId && r.record_date >= from && r.record_date <= to)
+        .sort((a, b) => (a.record_date < b.record_date ? 1 : (a.record_date > b.record_date ? -1 : b.id - a.id)))
+        .map(cloneRecord);
     },
 
     /** 删除某个用户某一天的记录，随后立即落盘 */
     delete(userId, date) {
-      state.db.run(
-        'DELETE FROM vision_train_record WHERE user_id = ? AND record_date = ?',
-        [userId, date]
-      );
-      return writeToDisk();
+      const i = state.records.findIndex((x) => x.user_id === userId && x.record_date === date);
+      if (i < 0) return persist(() => Promise.resolve(true));
+      const row = state.records.splice(i, 1)[0];
+      return persistRecordDelete(row.id);
     },
 
     /**
      * 新增或更新某一天的记录，随后立即落盘。
-     * 建行时 9 个视力字段留 NULL（不是 0）：折线图会自动跳过空值，
+     * 未填的视力字段存 null（不是 0）：折线图会自动跳过空值，
      * 不会在图表上砸出一个跌到 0 的点。
      */
     save(userId, rec) {
-      const d = rec.record_date;
-      // sql.js 的 bind() 遇到 undefined 会直接抛错，统一转成 NULL
-      const nullable = (v) => (v === undefined ? null : v);
-      const values = [
-        rec.pre_left, rec.pre_right, rec.pre_both,
-        rec.train_left, rec.train_right, rec.train_both,
-        rec.second_left, rec.second_right, rec.second_both,
-        rec.test_distance, rec.train_distance,
-        rec.remark
-      ].map(nullable);
-      if (this.getByDate(userId, d)) {
-        state.db.run(
-          `UPDATE vision_train_record SET
-             pre_left = ?, pre_right = ?, pre_both = ?,
-             train_left = ?, train_right = ?, train_both = ?,
-             second_left = ?, second_right = ?, second_both = ?,
-             test_distance = ?, train_distance = ?, remark = ?
-           WHERE user_id = ? AND record_date = ?`,
-          values.concat([userId, d])
-        );
+      const date = String(rec.record_date);
+      const now = nowUtc();
+      const i = state.records.findIndex((x) => x.user_id === userId && x.record_date === date);
+      let row;
+      if (i >= 0) {
+        row = Object.assign({}, state.records[i], pickRecordFields(rec), { gmt_modified: now });
+        state.records[i] = row;
       } else {
-        state.db.run(
-          `INSERT INTO vision_train_record
-             (user_id, record_date, pre_left, pre_right, pre_both,
-              train_left, train_right, train_both,
-              second_left, second_right, second_both,
-              test_distance, train_distance, remark)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          [userId, d].concat(values)
-        );
+        row = Object.assign({
+          id: state.nextRecordId++,
+          user_id: userId,
+          record_date: date,
+          gmt_created: now,
+          gmt_modified: now
+        }, pickRecordFields(rec));
+        state.records.push(row);
       }
-      return writeToDisk();
+      return persistRecord(row);
     },
 
     /**
-     * 训练过程中记一次视力值：行不存在就先建（视力字段为 NULL，距离带默认值），再写目标字段。
+     * 训练过程中记一次视力值：行不存在就先建（视力字段为 null，距离带默认值），再写目标字段。
      * mode = 'BEST' 只在更优时覆盖；mode = 'LAST' 直接覆盖。
      */
     recordVision(userId, date, field, value, mode) {
       if (!userId) return Promise.resolve(false);
       if (VISION_FIELDS.indexOf(field) < 0) throw new Error('不认识的视力字段：' + field);
-      state.db.run(
-        'INSERT OR IGNORE INTO vision_train_record ' +
-        '(user_id, record_date, test_distance, train_distance) VALUES (?, ?, ?, ?)',
-        [userId, date, DEFAULT_TEST_DISTANCE_CM, DEFAULT_TRAIN_DISTANCE_CM]
-      );
-      if (mode === 'LAST') {
-        state.db.run(
-          'UPDATE vision_train_record SET ' + field + ' = ? WHERE user_id = ? AND record_date = ?',
-          [value, userId, date]
-        );
-      } else {
-        // 旧值是 NULL 时视为无条件可更新
-        state.db.run(
-          'UPDATE vision_train_record SET ' + field + ' = ' +
-          'CASE WHEN ' + field + ' IS NULL OR ' + field + ' < ? THEN ? ELSE ' + field + ' END ' +
-          'WHERE user_id = ? AND record_date = ?',
-          [value, value, userId, date]
-        );
+      const now = nowUtc();
+      let row = state.records.find((x) => x.user_id === userId && x.record_date === date);
+      if (!row) {
+        row = normalizeRecord({
+          user_id: userId,
+          record_date: date,
+          test_distance: DEFAULT_TEST_DISTANCE_CM,
+          train_distance: DEFAULT_TRAIN_DISTANCE_CM,
+          gmt_created: now,
+          gmt_modified: now
+        }, state.nextRecordId++);
+        state.records.push(row);
       }
+      if (mode === 'LAST') {
+        row[field] = numOrNull(value);
+      } else if (row[field] === null || row[field] < value) {
+        row[field] = numOrNull(value);
+      }
+      row.gmt_modified = now;
       // 每答对一次就立刻落盘：训练随时可能被 Esc/关页打断，攒着不写会丢数据
-      return writeToDisk();
+      return persistRecord(row);
     },
 
-    /** 退出训练时的兜底强刷（平时每次作答已经即时落盘，这里只多导出一次） */
+    /** 退出训练时的兜底：等排队的写入全部落盘 */
     flushTrainingWrites() {
-      return writeToDisk();
+      return state.writeChain.then(() => state.mode === 'idb' && !state.pendingExport);
     },
 
-    /** 当前数据库的完整字节快照（写盘/导出都用它） */
-    exportBytes() {
-      return state.db.export();
+    /* ---------------- 导入 / 导出 ---------------- */
+
+    /** 结构化导出：JSON 里带上格式标识和版本号，方便以后升级 */
+    exportData() {
+      return {
+        format: FORMAT,
+        version: FORMAT_VERSION,
+        app: '视力训练记录台',
+        exportedAt: new Date().toISOString(),
+        users: state.users.slice().sort((a, b) => a.id - b.id).map(cloneUser),
+        records: state.records.slice().sort((a, b) => a.id - b.id).map(cloneRecord)
+      };
+    },
+
+    exportJSON() {
+      return JSON.stringify(this.exportData(), null, 2);
     },
 
     /**
-     * 把数据库导出成文件下载。
+     * 把数据导出成 JSON 文件下载。
      * 这是数据搬家的唯一途径（换电脑、换浏览器、清缓存前先导出一份），
      * 文件名带日期，多次备份不会互相覆盖。
      */
     exportBlob() {
-      const bytes = this.exportBytes();
-      const blob = new Blob([bytes], { type: 'application/x-sqlite3' });
+      const json = this.exportJSON();
+      const blob = new Blob([json], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = DB_FILE_NAME + '-' + new Date().toISOString().slice(0, 10);
+      a.download = 'eyerecord-' + new Date().toISOString().slice(0, 10) + '.json';
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -652,8 +1096,23 @@ END;
 
     /** 米 <-> 厘米 */
     m2cm(m) { return m === null || m === undefined || m === '' ? null : Math.round(m * 100); },
-    cm2m(cm) { return cm === null || cm === undefined ? null : (cm / 100).toFixed(2); }
+    cm2m(cm) { return cm === null || cm === undefined ? null : (cm / 100).toFixed(2); },
+
+    /* 内部工具，导出给测试 / 调试用 */
+    _parseSqlite: parseSqliteDatabase,
+    _fields: { USER_FIELDS: USER_FIELDS, RECORD_FIELDS: RECORD_FIELDS, VISION_FIELDS: VISION_FIELDS }
   };
 
+  function importResult(written, fileName, legacy) {
+    return {
+      status: 'ready',
+      imported: true,
+      legacy: !!legacy,
+      written: !!written,
+      fileName: fileName || '',
+      counts: { users: state.users.length, records: state.records.length }
+    };
+  }
+
   global.EyeDB = EyeDB;
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

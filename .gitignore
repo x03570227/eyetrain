@@ -18,8 +18,9 @@ desktop.ini
 *.orig
 *.tmp
 
-# 顶栏「导出备份」下载的数据文件（eyerecord-YYYY-MM-DD）
+# 顶栏「导出备份」下载的数据文件（eyerecord-YYYY-MM-DD / .json）+ 旧版 SQLite 备份
 eyerecord-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]
+eyerecord-*.json
 *.sqlite
 *.sqlite3
 *.db

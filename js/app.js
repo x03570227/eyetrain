@@ -174,7 +174,7 @@
     return WEEK[new Date(+p[0], +p[1] - 1, +p[2]).getDay()];
   }
 
-  /** SQLite 的 CURRENT_TIMESTAMP 是 UTC，这里转成北京时间显示 */
+  /** 库里的时间戳是 UTC（YYYY-MM-DD HH:MM:SS），这里转成北京时间显示 */
   function formatLocalTime(sqlUtc) {
     if (!sqlUtc) return '';
     const d = new Date(String(sqlUtc).replace(' ', 'T') + 'Z');
@@ -651,7 +651,7 @@
     if (!state.ready) {
       el.dbDot.className = 'db-dot';
       el.dbStateTitle.textContent = '未连接';
-      el.dbStateDesc.textContent = '正在打开数据库…';
+      el.dbStateDesc.textContent = '正在读取浏览器存储…';
       el.btnExport.hidden = true;
       el.btnImport.hidden = true;
       return;
@@ -704,8 +704,12 @@
     loadDate();
     initHistoryDefaults();
 
-    if (res && res.corrupt) {
-      toast('本地存的数据读不出来了，已重新开始；如果之前导出过备份，请用「导入」恢复', true);
+    if (res && res.migrated) {
+      const n = res.counts ? res.counts.records : 0;
+      toast('已把浏览器里的旧版数据升级到新格式：' + n + ' 条记录');
+    }
+    if (res && res.legacyError) {
+      toast('检测到旧版本地数据但读不出来，已从空白开始；如果之前导出过备份，请用「导入」恢复', true);
     }
     // 「看过没」存在 IndexedDB 里，所以换文件夹打开时说明页会重新出现 —— 正是需要的
     window.EyeDB.introShown().then((seen) => { if (!seen) showIntro(); });
@@ -915,18 +919,24 @@
     el.fileImport.addEventListener('change', () => {
       const file = el.fileImport.files[0];
       if (!file) return;
-      window.EyeDB.loadFromFile(file).then(() => {
+      // 新版是 JSON 备份；旧版导出的 SQLite 文件也认，会自动转成新格式
+      window.EyeDB.loadFromFile(file).then((res) => {
         onReady();
-        toast('已载入 ' + file.name);
+        const n = res && res.counts ? res.counts.records : 0;
+        if (res && res.legacy) {
+          toast('已导入旧版备份：' + n + ' 条记录，已转成新格式');
+        } else {
+          toast('已导入备份：' + n + ' 条记录');
+        }
       }).catch((err) => {
-        toast('读取失败：' + (err && err.message ? err.message : err), true);
+        toast('导入失败：' + (err && err.message ? err.message : err), true);
       });
       el.fileImport.value = '';
     });
 
     el.btnExport.addEventListener('click', () => {
       window.EyeDB.exportBlob();
-      toast('备份已下载，请存到 U 盘或网盘');
+      toast('备份已下载（JSON），请存到 U 盘或网盘');
     });
 
     el.introOk.addEventListener('click', hideIntro);
@@ -1109,10 +1119,10 @@
     setLocked(false);
     renderDbState();
 
-    // boot 只在 sql.js 起不来时才会 reject（缺文件 / WASM 解不开），
-    // 其余情况都返回一个能用的库 —— 不能再让任何状态把界面卡在遮罩上。
+    // boot 内部已经把「没有 IndexedDB / 打开失败」都降级成可用状态，
+    // 这里只是兜底，不能再让任何状态把界面卡在遮罩上。
     window.EyeDB.boot().then(onReady).catch((err) => {
-      toast('数据库打开失败：' + (err && err.message ? err.message : err), true);
+      toast('存储打开失败：' + (err && err.message ? err.message : err), true);
       renderWarnBar();
     });
   }
