@@ -137,6 +137,7 @@
     quickRange: $('quickRange'),
     tableBody: $('tableBody'),
     tableCount: $('tableCount'),
+    zoomBackdrop: $('zoomBackdrop'),
     toast: $('toast')
   };
 
@@ -566,6 +567,50 @@
     });
   }
 
+  /* 图表卡片右上角「放大」：让这张卡在当前窗口里最大化。
+     不用浏览器全屏 API（file:// 下要用户手势、退出时布局时序还容易算错尺寸），
+     只给卡片加一个类，靠 CSS 把它 fixed 铺满窗口、退出时去掉类即可还原——
+     全程不动 DOM，画布也不会被搬走重建。 */
+  let zoomedCard = null;
+
+  /* 图表尺寸必须显式喂给 Chart.js：它自带的 resize() 是按容器反推的，
+     容器尺寸在布局切换的瞬间可能还是旧值，算出来就留在原尺寸上、溢出卡片。 */
+  function fitVisibleCharts() {
+    CHART_DEFS.forEach((def) => {
+      const box = $(def.canvas);
+      const chart = charts[def.canvas];
+      if (!chart || !box || box.hidden) return;
+      const w = Math.floor(box.clientWidth);
+      const h = Math.floor(box.clientHeight);
+      if (w > 0 && h > 0) chart.resize(w, h);
+    });
+  }
+
+  function setChartZoom(card) {
+    if (zoomedCard) zoomedCard.classList.remove('is-zoomed');
+    zoomedCard = card || null;
+    if (zoomedCard) zoomedCard.classList.add('is-zoomed');
+    document.body.classList.toggle('is-zooming', !!zoomedCard);
+    el.zoomBackdrop.hidden = !zoomedCard;
+    fitVisibleCharts();          // 类改完布局就是最终态了，这里量到的尺寸可以直接用
+  }
+
+  function toggleChartZoom(card) {
+    setChartZoom(zoomedCard ? null : card);
+  }
+
+  function bindChartZoom() {
+    document.querySelectorAll('.chart-card').forEach((card) => {
+      const btn = card.querySelector('.card-zoom');
+      if (btn) btn.addEventListener('click', () => toggleChartZoom(card));
+    });
+
+    el.zoomBackdrop.addEventListener('click', () => setChartZoom(null));
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && zoomedCard) setChartZoom(null);
+    });
+  }
+
   function renderTable(rows) {
     el.tableCount.textContent = rows.length
       ? '共 ' + rows.length + ' 条，按日期倒序'
@@ -980,6 +1025,8 @@
         setRange(daysAgo(+days - 1), todayStr(), btn);
       }
     });
+
+    bindChartZoom();
 
     /* ---- 切换用户 ---- */
     el.btnUser.addEventListener('click', openUserModal);

@@ -140,18 +140,39 @@
 
     <div class="chart-grid">
       <div class="card chart-card">
-        <div class="card-head"><h2><i class="dot dot-blue"></i>训练前视力</h2>
-          <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
+        <div class="card-head chart-head">
+          <div class="head-text">
+            <h2><i class="dot dot-blue"></i>训练前视力</h2>
+            <p>左眼 / 右眼 / 双眼，按日期连成折线</p>
+          </div>
+          <button type="button" class="card-zoom" title="在当前窗口最大化查看（Esc 还原）">
+            <span class="zoom-in">放大 ⤢</span><span class="zoom-out">还原 ✕</span>
+          </button>
+        </div>
         <div class="chart-box"><canvas id="chartPre"></canvas></div>
       </div>
       <div class="card chart-card">
-        <div class="card-head"><h2><i class="dot dot-purple"></i>强化后视力</h2>
-          <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
+        <div class="card-head chart-head">
+          <div class="head-text">
+            <h2><i class="dot dot-purple"></i>强化后视力</h2>
+            <p>左眼 / 右眼 / 双眼，按日期连成折线</p>
+          </div>
+          <button type="button" class="card-zoom" title="在当前窗口最大化查看（Esc 还原）">
+            <span class="zoom-in">放大 ⤢</span><span class="zoom-out">还原 ✕</span>
+          </button>
+        </div>
         <div class="chart-box"><canvas id="chartPost"></canvas></div>
       </div>
       <div class="card chart-card">
-        <div class="card-head"><h2><i class="dot dot-green"></i>秒视视力</h2>
-          <p>左眼 / 右眼 / 双眼，按日期连成折线</p></div>
+        <div class="card-head chart-head">
+          <div class="head-text">
+            <h2><i class="dot dot-green"></i>秒视视力</h2>
+            <p>左眼 / 右眼 / 双眼，按日期连成折线</p>
+          </div>
+          <button type="button" class="card-zoom" title="在当前窗口最大化查看（Esc 还原）">
+            <span class="zoom-in">放大 ⤢</span><span class="zoom-out">还原 ✕</span>
+          </button>
+        </div>
         <div class="chart-box"><canvas id="chartSecond"></canvas></div>
       </div>
     </div>
@@ -348,6 +369,8 @@
     </div>
   </div>
 </div>
+
+<div class="zoom-backdrop" id="zoomBackdrop" hidden></div>
 
 <div class="toast" id="toast" hidden></div>
 

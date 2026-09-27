@@ -478,13 +478,56 @@ button { font-family: inherit; }
 @media (max-width: 1100px) {
   .chart-grid { grid-template-columns: 1fr; }
 }
-.chart-card { margin-bottom: 22px; }
-.chart-card .card-head { margin-bottom: 14px; }
+/* min-width:0 必须有：Chart.js 会把画布的 width 写成内联样式（放大后是 1300 多 px），
+   而网格项默认 min-width:auto 会被这个内联宽度顶住、退不回原列宽 —— 于是「还原」后
+   卡片还是宽的，看起来就像没恢复。 */
+.chart-card { margin-bottom: 22px; min-width: 0; }
+.chart-card .card-head { margin-bottom: 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.chart-card .head-text { min-width: 0; }
+
+/* 图表卡片右上角：放大 / 还原 */
+.card-zoom {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink-2);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color .15s, color .15s;
+}
+.card-zoom:hover { border-color: var(--primary); color: var(--primary); }
+.card-zoom .zoom-out { display: none; }
+
+/* 最大化态：卡片浮在窗口上（只改定位，不动 DOM），画布吃掉剩余高度 */
+.zoom-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 190;
+  background: rgba(20, 28, 48, .42);
+}
+body.is-zooming { overflow: hidden; }
+.chart-card.is-zoomed {
+  position: fixed;
+  inset: 24px;
+  z-index: 191;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-lg);
+}
+.chart-card.is-zoomed .chart-box { flex: 1; height: auto; min-height: 0; }
+.chart-card.is-zoomed .card-zoom .zoom-in { display: none; }
+.chart-card.is-zoomed .card-zoom .zoom-out { display: inline; }
 .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; flex: none; }
 .dot-blue { background: var(--primary); }
 .dot-green { background: var(--green); }
 .dot-purple { background: var(--purple); }
-.chart-box { position: relative; height: 250px; }
+.chart-box { position: relative; height: 250px; overflow: hidden; }
 
 .table-wrap { overflow-x: auto; }
 .record-table {
